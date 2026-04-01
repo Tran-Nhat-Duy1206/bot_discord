@@ -1,0 +1,9 @@
+discord.py
+aiohttp
+python-dotenv
+requests
+tzdata
+google-api-python-client
+google-auth
+google-auth-oauthlib
+Pillow
