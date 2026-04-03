@@ -330,7 +330,8 @@ async def autocomplete_skill(_: discord.Interaction, current: str):
     return out[:25]
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     async def _rpg_rate_limit_check(interaction: discord.Interaction) -> bool:
         cmd = interaction.command
         cmd_name = str(getattr(cmd, "name", "")).strip().lower()
@@ -370,15 +371,6 @@ def setup(bot: commands.Bot):
         reload_assets()
 
     bot.add_listener(_on_ready_once, "on_ready")
-
-    @bot.tree.command(name="rpg_assets_reload", description="Reload RPG asset mapping (owner)")
-    async def rpg_assets_reload(interaction: discord.Interaction):
-        app = interaction.client.application
-        owner_id = app.owner.id if app and app.owner else None
-        if owner_id is None or interaction.user.id != owner_id:
-            return await interaction.response.send_message("❌ Chỉ owner bot dùng lệnh này.", ephemeral=True)
-        reload_assets()
-        await interaction.response.send_message("✅ Đã reload RPG assets.", ephemeral=True)
 
     @bot.tree.command(name="rpg_start", description="Khởi tạo nhân vật RPG")
     async def rpg_start(interaction: discord.Interaction):
@@ -1010,7 +1002,7 @@ def setup(bot: commands.Bot):
                 await conn.commit()
         await interaction.response.send_message(f"🗑️ Đã drop `{item}` x{amount}.")
 
-    register_combat_commands(bot)
-    register_quest_commands(bot)
-    register_reports_commands(bot)
-    register_season_commands(bot)
+    register_combat_commands(bot, guilds)
+    register_quest_commands(bot, guilds)
+    register_reports_commands(bot, guilds)
+    register_season_commands(bot, guilds)

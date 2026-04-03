@@ -16,7 +16,8 @@ def _fmt_dt(dt: datetime | None) -> str:
     return f"<t:{ts}:F>"
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     @bot.tree.command(name="avatar", description="Xem avatar của bạn hoặc người khác")
     @app_commands.describe(member="Member cần xem avatar")
     async def avatar(interaction: discord.Interaction, member: Optional[discord.Member] = None):

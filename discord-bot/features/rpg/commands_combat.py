@@ -72,16 +72,8 @@ def _as_str_list(value) -> list[str]:
     return [str(x) for x in value]
 
 
-def register_combat_commands(bot: commands.Bot):
-    @bot.tree.command(name="rpg_event", description="Xem PvE weekly event hiện tại")
-    async def rpg_event(interaction: discord.Interaction):
-        event = current_weekly_event()
-        e = discord.Embed(title="📅 Weekly PvE Event", color=discord.Color.teal())
-        e.add_field(name="Event", value=event_brief(event), inline=False)
-        e.add_field(name="Week", value=str(int(event.get("week", 0))), inline=True)
-        e.add_field(name="ID", value=str(event.get("id", "")), inline=True)
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
+def register_combat_commands(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     @bot.tree.command(name="hunt", description="Đi săn quái RPG")
     async def hunt(interaction: discord.Interaction):
         if interaction.guild is None:

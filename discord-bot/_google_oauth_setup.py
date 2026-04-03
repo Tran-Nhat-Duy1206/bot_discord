@@ -12,7 +12,7 @@ SCOPES = [
 ]
 
 def main():
-    print("=== Google OAuth setup ===")
+    print("=== Google OAuth setup (Global bot token) ===")
     print("Using credentials:", os.path.abspath(CLIENT_SECRET_FILE))
     print("Will save token to:", os.path.abspath(TOKEN_FILE))
 

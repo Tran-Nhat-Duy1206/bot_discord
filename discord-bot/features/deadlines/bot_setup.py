@@ -34,7 +34,20 @@ from .ui import (
 from .utils import autocomplete_due_date, autocomplete_due_time, autocomplete_notify, make_offsets, parse_due_date_time
 
 
-def setup(bot: commands.Bot):
+def _ok(text: str) -> discord.Embed:
+    return discord.Embed(description=f"✅ {text}", color=discord.Color.green())
+
+
+def _err(text: str) -> discord.Embed:
+    return discord.Embed(description=f"❌ {text}", color=discord.Color.red())
+
+
+def _info(title: str, text: str) -> discord.Embed:
+    return discord.Embed(title=title, description=text, color=discord.Color.blurple())
+
+
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     db_init()
 
     backoff_seconds = [60, 300, 1800, 7200, 43200]
@@ -97,10 +110,14 @@ def setup(bot: commands.Bot):
                     if not channel:
                         raise RuntimeError(f"Channel not found: {channel_id}")
 
-                    await channel.send(
-                        f"⏰ {mention} nhắc deadline: **{title}**\n"
-                        f"📌 Hạn: **{due_str}**  •  ID: `{deadline_id}`"
+                    embed = discord.Embed(
+                        title="⏰ Nhắc Deadline",
+                        description=f"{mention} deadline: **{title}**",
+                        color=discord.Color.orange(),
                     )
+                    embed.add_field(name="📌 Hạn", value=f"**{due_str}**", inline=True)
+                    embed.add_field(name="ID", value=f"`{deadline_id}`", inline=True)
+                    await channel.send(embed=embed)
 
                     print(f"[DEADLINE][OK] notif_id={notif_id} deadline_id={deadline_id}")
                     cur.execute(
@@ -171,7 +188,7 @@ def setup(bot: commands.Bot):
         query = (current or "").strip().lower()
         rows = list_user_google_accounts(interaction.user.id)
         out: list[app_commands.Choice[str]] = []
-        for email, is_default, _updated_at in rows:
+        for google_sub, email, is_default, _updated_at in rows:
             email_text = str(email)
             if query and query not in email_text.lower():
                 continue
@@ -184,19 +201,20 @@ def setup(bot: commands.Bot):
         await interaction.response.defer(ephemeral=True)
         auth_url, state = start_user_google_link(interaction.user.id)
         if not auth_url or not state:
-            return await interaction.followup.send(
-                "❌ Không tạo được link OAuth. Kiểm tra `GOOGLE_OAUTH_CLIENT_SECRET_FILE` và redirect URI.",
-                ephemeral=True,
-            )
+            return await interaction.followup.send(embed=_err("Không tạo được link OAuth. Kiểm tra `GOOGLE_OAUTH_CLIENT_SECRET_FILE` và redirect URI."), ephemeral=True)
 
-        await interaction.followup.send(
-            "🔐 Mở link bên dưới để đăng nhập Google account của bạn.\n"
-            f"{auth_url}\n\n"
-            "Sau khi Google redirect, copy toàn bộ URL callback và chạy:\n"
-            "`/deadline_google_verify oauth_data:<callback_url>`\n"
-            f"(state hiện tại: `{state}`)",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="🔐 Liên kết Google Account",
+            description="Mở link bên dưới trong trình duyệt để đăng nhập Google.",
+            color=discord.Color.blue(),
         )
+        embed.add_field(name="🔗 Link đăng nhập", value=f"```\n{auth_url}\n```", inline=False)
+        embed.add_field(
+            name="📋 Hướng dẫn",
+            value="1. Copy link bên trên và mở trong trình duyệt\n2. Đăng nhập và cấp quyền\n3. Sau khi redirect, copy URL và paste vào:\n`/deadline_google_verify oauth_data:<URL>`",
+            inline=False
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="deadline_google_verify", description="Xác thực callback OAuth Google")
     @app_commands.describe(
@@ -207,21 +225,27 @@ def setup(bot: commands.Bot):
         await interaction.response.defer(ephemeral=True)
         ok, msg = verify_user_google_link(interaction.user.id, oauth_data, state or None)
         if not ok:
-            return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-        await interaction.followup.send(
-            f"✅ Liên kết thành công Google account: `{msg}`\n"
-            "Dùng `/deadline_google_accounts` để xem và đổi account mặc định.",
-            ephemeral=True,
+            return await interaction.followup.send(embed=_err(msg), ephemeral=True)
+        embed = discord.Embed(
+            title="✅ Liên kết thành công",
+            description=f"Google account: `{msg}`",
+            color=discord.Color.green(),
         )
+        embed.add_field(name="💡 Tiếp theo", value="Dùng `/deadline_google_accounts` để xem và đổi account mặc định.", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 
     @bot.tree.command(name="deadline_google_accounts", description="Xem các Google account đã liên kết")
     async def deadline_google_accounts(interaction: discord.Interaction):
         rows = list_user_google_accounts(interaction.user.id)
         if not rows:
-            return await interaction.response.send_message(
-                "📭 Bạn chưa liên kết Google account nào. Dùng `/deadline_google_login`.",
-                ephemeral=True,
+            embed = discord.Embed(
+                title="📭 Chưa có Google account",
+                description="Bạn chưa liên kết Google account nào.\n\nSử dụng `/deadline_google_login` để bắt đầu.",
+                color=discord.Color.orange(),
             )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
         lines = []
         for email, is_default, updated_at in rows:
             prefix = "✅" if int(is_default) == 1 else "•"
@@ -233,34 +257,71 @@ def setup(bot: commands.Bot):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @bot.tree.command(name="deadline_google_set_default", description="Đặt Google account mặc định")
-    @app_commands.describe(email="Email account muốn đặt mặc định")
-    @app_commands.autocomplete(email=autocomplete_google_email)
-    async def deadline_google_set_default(interaction: discord.Interaction, email: str):
-        ok, msg = set_user_google_default(interaction.user.id, email)
-        if not ok:
-            return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
-        await interaction.response.send_message(f"✅ Đã đặt mặc định: `{email}`", ephemeral=True)
+        @bot.tree.command(name="deadline_google_set_default", description="Đặt Google account mặc định")
+        @app_commands.describe(email="Email account muốn đặt mặc định")
+        @app_commands.autocomplete(email=autocomplete_google_email)
+        async def deadline_google_set_default(interaction: discord.Interaction, email: str):
+            ok, msg = set_user_google_default(interaction.user.id, email)
+            if not ok:
+                return await interaction.response.send_message(embed=_err(msg), ephemeral=True)
+            await interaction.response.send_message(embed=_ok(f"Đã đặt mặc định: `{email}`"), ephemeral=True)
 
-    @bot.tree.command(name="deadline_google_unlink", description="Gỡ liên kết một Google account")
-    @app_commands.describe(email="Email account muốn gỡ")
-    @app_commands.autocomplete(email=autocomplete_google_email)
-    async def deadline_google_unlink(interaction: discord.Interaction, email: str):
-        ok, msg = unlink_user_google_account(interaction.user.id, email)
-        if not ok:
-            return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
-        await interaction.response.send_message(f"✅ Đã gỡ liên kết account `{email}`", ephemeral=True)
+        @bot.tree.command(name="deadline_google_unlink", description="Gỡ liên kết một Google account")
+        @app_commands.describe(email="Email account muốn gỡ")
+        @app_commands.autocomplete(email=autocomplete_google_email)
+        async def deadline_google_unlink(interaction: discord.Interaction, email: str):
+            ok, msg = unlink_user_google_account(interaction.user.id, email)
+            if not ok:
+                return await interaction.response.send_message(embed=_err(msg), ephemeral=True)
+            await interaction.response.send_message(embed=_ok(f"Đã gỡ liên kết account `{email}`"), ephemeral=True)
 
     @bot.tree.command(name="deadline_google_import_global", description="Import token global hiện tại vào account của bạn")
     async def deadline_google_import_global(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         ok, msg = import_global_token_for_user(interaction.user.id)
         if not ok:
-            return await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-        await interaction.followup.send(
-            f"✅ Đã import token global thành account `{msg}` cho user của bạn.",
-            ephemeral=True,
+            return await interaction.followup.send(embed=_err(msg), ephemeral=True)
+        embed = discord.Embed(
+            title="✅ Import thành công",
+            description=f"Đã import token global thành account `{msg}` cho user của bạn.",
+            color=discord.Color.green(),
         )
+        embed.add_field(name="💡 Lưu ý", value="Account này sẽ được đặt làm mặc định nếu đây là account đầu tiên.", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @bot.tree.command(name="deadline_google_help", description="Hướng dẫn liên kết Google account")
+    async def deadline_google_help(interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🔐 Hướng dẫn liên kết Google account",
+            description="Để tạo Google Sheet/Docs cho deadline, bạn cần liên kết Google account của mình.",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name="📝 Các bước thực hiện",
+            value=(
+                "**1.** Dùng `/deadline_google_login` để nhận link đăng nhập Google\n"
+                "**2.** Mở link trong trình duyệt và đăng nhập Google account của bạn\n"
+                "**3.** Sau khi Google redirect, copy toàn bộ URL (bắt đầu bằng `https://localhost/...`)\n"
+                "**4.** Dùng `/deadline_google_verify` và paste URL đã copy vào tham số `oauth_data`\n"
+                "**5.** Hoàn tất! Dùng `/deadline_google_accounts` để xem các account đã liên kết"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="💡 Mẹo",
+            value=(
+                "• Bạn có thể liên kết nhiều Google account\n"
+                "• Dùng `/deadline_google_set_default` để đổi account mặc định\n"
+                "• Dùng `/deadline_google_use_account` để chọn account cho từng deadline cụ thể"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⚠️ Lưu ý",
+            value="Nếu gặp lỗi từ Discord khi mở link, hãy copy link và mở trong trình duyệt khác (Chrome, Edge...) thay vì dùng Discord built-in browser.",
+            inline=False,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def autocomplete_my_deadline(interaction: discord.Interaction, current: str):
         if interaction.guild_id is None:
@@ -293,7 +354,7 @@ def setup(bot: commands.Bot):
     @app_commands.autocomplete(email=autocomplete_google_email)
     async def deadline_google_use_account(interaction: discord.Interaction, deadline_id: int, email: str):
         if interaction.guild_id is None:
-            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Chỉ dùng trong server."), ephemeral=True)
 
         conn = db_connect()
         cur = conn.cursor()
@@ -304,10 +365,10 @@ def setup(bot: commands.Bot):
         row = cur.fetchone()
         if not row:
             conn.close()
-            return await interaction.response.send_message("❌ Deadline không tồn tại.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Deadline không tồn tại."), ephemeral=True)
         if int(row[0]) != int(interaction.user.id):
             conn.close()
-            return await interaction.response.send_message("❌ Chỉ owner deadline mới đổi account.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Chỉ owner deadline mới đổi account."), ephemeral=True)
 
         cur.execute(
             "SELECT 1 FROM user_google_accounts WHERE user_id=? AND lower(google_email)=lower(?)",
@@ -315,7 +376,7 @@ def setup(bot: commands.Bot):
         )
         if not cur.fetchone():
             conn.close()
-            return await interaction.response.send_message("❌ Email chưa được liên kết với bạn.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Email chưa được liên kết với bạn."), ephemeral=True)
 
         cur.execute(
             "UPDATE deadlines SET google_account_email=? WHERE id=? AND guild_id=?",
@@ -323,10 +384,12 @@ def setup(bot: commands.Bot):
         )
         conn.commit()
         conn.close()
-        await interaction.response.send_message(
-            f"✅ Deadline `{deadline_id}` sẽ dùng account `{email}` để tạo Sheet/Docs.",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="✅ Đã cập nhật Google account",
+            description=f"Deadline `#{deadline_id}` sẽ dùng account `{email}` để tạo Sheet/Docs.",
+            color=discord.Color.green(),
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="deadline_add", description="Tạo deadline + bắt buộc tạo room/role để join")
     @app_commands.describe(
@@ -350,17 +413,19 @@ def setup(bot: commands.Bot):
         await interaction.response.defer(ephemeral=True)
 
         if not interaction.guild or not interaction.channel:
-            return await interaction.followup.send("❌ Chỉ dùng trong server.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Chỉ dùng trong server."), ephemeral=True)
 
         dt = parse_due_date_time(due_date, due_time)
         if not dt:
-            return await interaction.followup.send(
-                "❌ Sai định dạng ngày giờ.\nVí dụ:\n- due_date: `07/03/2026` hoặc `2026-03-07`\n- due_time: `21:30`",
-                ephemeral=True,
+            embed = discord.Embed(
+                title="❌ Sai định dạng ngày giờ",
+                description="Ví dụ định dạng đúng:\n• due_date: `07/03/2026` hoặc `2026-03-07`\n• due_time: `21:30`",
+                color=discord.Color.red(),
             )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
 
         if dt <= datetime.now(VN_TZ):
-            return await interaction.followup.send("❌ Deadline phải ở tương lai.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Deadline phải ở tương lai."), ephemeral=True)
 
         conn = db_connect()
         cur = conn.cursor()
@@ -371,11 +436,12 @@ def setup(bot: commands.Bot):
         active_count = int((cur.fetchone() or [0])[0])
         if active_count >= max(1, DEADLINE_MAX_ACTIVE_PER_GUILD):
             conn.close()
-            return await interaction.followup.send(
-                f"❌ Server đã đạt giới hạn deadline active ({DEADLINE_MAX_ACTIVE_PER_GUILD}). "
-                "Hãy /deadline_done hoặc /deadline_delete bớt trước.",
-                ephemeral=True,
+            embed = discord.Embed(
+                title="❌ Đã đạt giới hạn",
+                description=f"Server đã có {active_count}/{DEADLINE_MAX_ACTIVE_PER_GUILD} deadline active.\n\nHãy `/deadline_done` hoặc `/deadline_delete` bớt trước.",
+                color=discord.Color.red(),
             )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
 
         cur.execute(
             """
@@ -481,10 +547,14 @@ def setup(bot: commands.Bot):
         )
         view = DeadlineJoinView(bot, deadline_id)
 
-        await interaction.followup.send(
-            f"✅ Đã tạo deadline `#{deadline_id}`. Mình gửi bảng Join ra kênh để mọi người tham gia.",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="✅ Deadline đã được tạo",
+            description=f"Đã tạo deadline `#{deadline_id}`. Mình gửi bảng Join ra kênh để mọi người tham gia.",
+            color=discord.Color.green(),
         )
+        embed.add_field(name="📝 Tiêu đề", value=title, inline=True)
+        embed.add_field(name="📅 Hạn", value=dt.strftime("%d/%m/%Y %H:%M"), inline=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         sent = await interaction.channel.send(embed=embed, view=view)
 
         try:
@@ -502,7 +572,7 @@ def setup(bot: commands.Bot):
     @bot.tree.command(name="deadline_add_member", description="Chủ deadline add thành viên vào group")
     async def deadline_add_member(interaction: discord.Interaction, deadline_id: int, member: discord.Member):
         if not interaction.guild:
-            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Chỉ dùng trong server."), ephemeral=True)
 
         conn = db_connect()
         cur = conn.cursor()
@@ -510,12 +580,12 @@ def setup(bot: commands.Bot):
         row = cur.fetchone()
         if not row:
             conn.close()
-            return await interaction.response.send_message("❌ Deadline không tồn tại.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Deadline không tồn tại."), ephemeral=True)
 
         owner_id, role_id = row
         if interaction.user.id != owner_id:
             conn.close()
-            return await interaction.response.send_message("❌ Chỉ chủ deadline mới add được.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Chỉ chủ deadline mới add được."), ephemeral=True)
 
         cur.execute("INSERT OR IGNORE INTO deadline_members(deadline_id, user_id) VALUES(?, ?)", (deadline_id, member.id))
         conn.commit()
@@ -526,7 +596,12 @@ def setup(bot: commands.Bot):
         except Exception:
             pass
 
-        await interaction.response.send_message(f"✅ Đã thêm {member.mention} vào deadline `{deadline_id}`.", ephemeral=True)
+        embed = discord.Embed(
+            title="✅ Đã thêm thành viên",
+            description=f"Đã thêm {member.mention} vào deadline `#{deadline_id}`.",
+            color=discord.Color.green(),
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @bot.tree.command(name="deadline_list", description="Xem deadline của bạn trong server")
     async def deadline_list(interaction: discord.Interaction):
@@ -547,7 +622,12 @@ def setup(bot: commands.Bot):
         conn.close()
 
         if not rows:
-            return await interaction.response.send_message("📭 Bạn chưa tham gia deadline nào.", ephemeral=True)
+            embed = discord.Embed(
+                title="📭 Không có deadline",
+                description="Bạn chưa tham gia deadline nào.",
+                color=discord.Color.orange(),
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         lines = []
         for (deadline_id, title, due_at, done) in rows:
@@ -568,7 +648,7 @@ def setup(bot: commands.Bot):
     @bot.tree.command(name="deadline_info", description="Xem chi tiết 1 deadline")
     async def deadline_info(interaction: discord.Interaction, deadline_id: int):
         if not interaction.guild:
-            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Chỉ dùng trong server."), ephemeral=True)
 
         conn = db_connect()
         cur = conn.cursor()
@@ -584,7 +664,7 @@ def setup(bot: commands.Bot):
         conn.close()
 
         if not row:
-            return await interaction.response.send_message("❌ Deadline không tồn tại.", ephemeral=True)
+            return await interaction.response.send_message(embed=_err("Deadline không tồn tại."), ephemeral=True)
 
         (deadline_id, title, due_at, done, role_id, channel_id, sheet_link, doc_link, owner_id, created_at, cleaned_up, google_account_email) = row
         embed = deadline_summary_embed(title, due_at, deadline_id, role_id, channel_id, sheet_link, doc_link)
@@ -600,7 +680,7 @@ def setup(bot: commands.Bot):
     async def deadline_delete(interaction: discord.Interaction, deadline_id: int):
         await interaction.response.defer(ephemeral=True)
         if not interaction.guild:
-            return await interaction.followup.send("❌ Chỉ dùng trong server.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Chỉ dùng trong server."), ephemeral=True)
 
         conn = db_connect()
         cur = conn.cursor()
@@ -608,11 +688,11 @@ def setup(bot: commands.Bot):
         row = cur.fetchone()
         if not row:
             conn.close()
-            return await interaction.followup.send("❌ Deadline không tồn tại.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Deadline không tồn tại."), ephemeral=True)
 
         if interaction.user.id != row[0]:
             conn.close()
-            return await interaction.followup.send("❌ Chỉ owner mới xoá được.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Chỉ owner mới xoá được."), ephemeral=True)
 
         cur.execute("UPDATE deadlines SET done=1 WHERE id=? AND guild_id=?", (deadline_id, interaction.guild_id))
         conn.commit()
@@ -629,10 +709,24 @@ def setup(bot: commands.Bot):
         conn.close()
 
         try:
-            await interaction.followup.send(f"✅ Đã xoá deadline `{deadline_id}`. Cleanup: {msg}", ephemeral=True)
+            embed = discord.Embed(
+                title="✅ Đã xoá deadline",
+                description=f"Đã xoá deadline `#{deadline_id}`.",
+                color=discord.Color.green(),
+            )
+            if msg:
+                embed.add_field(name="🧹 Cleanup", value=msg, inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except discord.NotFound:
             if interaction.channel:
-                await interaction.channel.send(f"✅ Đã xoá deadline `{deadline_id}`. Cleanup: {msg}")
+                embed = discord.Embed(
+                    title="✅ Đã xoá deadline",
+                    description=f"Đã xoá deadline `#{deadline_id}`.",
+                    color=discord.Color.green(),
+                )
+                if msg:
+                    embed.add_field(name="🧹 Cleanup", value=msg, inline=False)
+                await interaction.channel.send(embed=embed)
 
     @bot.tree.command(name="deadline_done", description="Chủ deadline đánh dấu xong")
     async def deadline_done(interaction: discord.Interaction, deadline_id: int):
@@ -643,19 +737,22 @@ def setup(bot: commands.Bot):
         row = cur.fetchone()
         if not row:
             conn.close()
-            return await interaction.followup.send("❌ Deadline không tồn tại.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Deadline không tồn tại."), ephemeral=True)
 
         if interaction.user.id != row[0]:
             conn.close()
-            return await interaction.followup.send("❌ Chỉ chủ deadline mới đánh dấu xong.", ephemeral=True)
+            return await interaction.followup.send(embed=_err("Chỉ chủ deadline mới đánh dấu xong."), ephemeral=True)
 
         cur.execute("UPDATE deadlines SET done=1 WHERE id=? AND guild_id=?", (deadline_id, interaction.guild_id))
         conn.commit()
         conn.close()
 
         ok, msg = await cleanup_deadline_resources(bot, interaction.guild_id, deadline_id)
-        extra = f"\n🧹 Cleanup: {msg}" if msg else ""
-        await interaction.followup.send(
-            f"✅ Đã đánh dấu xong deadline `{deadline_id}`.{extra}",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="✅ Deadline hoàn thành",
+            description=f"Đã đánh dấu xong deadline `#{deadline_id}`.",
+            color=discord.Color.green(),
         )
+        if msg:
+            embed.add_field(name="🧹 Cleanup", value=msg, inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)

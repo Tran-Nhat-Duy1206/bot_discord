@@ -219,7 +219,8 @@ def _image_generate_sync(prompt: str) -> tuple[str, bytes | None]:
     raise RuntimeError("AI image không có url/b64_json")
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
 
     @bot.tree.command(name="ai_chat", description="Chat với AI")
     @app_commands.describe(prompt="Nội dung bạn muốn hỏi")

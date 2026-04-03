@@ -3,11 +3,14 @@ import time
 import logging
 import asyncio
 from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 from discord import app_commands
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+
+GUILDS: list[discord.abc.Snowflake] = []
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -36,11 +39,9 @@ bot = commands.Bot(command_prefix="-", intents=intents, help_command=None)
 _START_TS = time.time()
 
 try:
-    from features import tft, deadlines, economy, moderation, leveling, rpg, utility, music, ai, fun
+    from features import economy, moderation, leveling, rpg, utility, music, ai, fun
 except ImportError:
     try:
-        from features import tft
-        from features import deadlines
         from features import economy
         from features import moderation
         from features import leveling
@@ -53,21 +54,14 @@ except ImportError:
         logger.error(f"Failed to import required modules: {e}")
         raise
 
-try:
-    from features.deadlines import create_deadline_doc, create_deadline_sheet
-except ImportError as e:
-    logger.error(f"Failed to import deadline functions: {e}")
-    raise
-
-tft.setup(bot)
-deadlines.setup(bot)
-moderation.setup(bot)
-leveling.setup(bot)
-rpg.setup(bot)
-utility.setup(bot)
-music.setup(bot)
-ai.setup(bot)
-fun.setup(bot)
+# deadlines.setup(bot, GUILDS)
+moderation.setup(bot, GUILDS)
+leveling.setup(bot, GUILDS)
+rpg.setup(bot, GUILDS)
+utility.setup(bot, GUILDS)
+music.setup(bot, GUILDS)
+ai.setup(bot, GUILDS)
+fun.setup(bot, GUILDS)
 
 @bot.event
 async def on_ready():
@@ -205,15 +199,6 @@ async def nuke(interaction: discord.Interaction):
 async def help_cmd(interaction: discord.Interaction):
     e = discord.Embed(title="📚 Help", color=discord.Color.blurple())
     e.add_field(
-        name="⏰ Deadlines",
-        value=(
-            "`/deadline_add` tạo deadline + room/role + doc\n"
-            "`/deadline_list` xem deadline bạn tham gia\n"
-            "`/deadline_done` đánh dấu xong + dọn role/kênh\n"
-        ),
-        inline=False,
-    )
-    e.add_field(
         name="🛡️ Moderation",
         value=(
             "`/kick` kick member\n"
@@ -223,14 +208,6 @@ async def help_cmd(interaction: discord.Interaction):
             "`/clear` xóa tin nhắn\n"
             "`/setautorole` `/autorole_off` auto role\n"
             "`/setmodlog` `/modlog_off` log moderation"
-        ),
-        inline=False,
-    )
-    e.add_field(
-        name="🎮 TFT",
-        value=(
-            "`/team` top team theo tướng\n"
-            "`/item` đồ khuyên dùng"
         ),
         inline=False,
     )
@@ -361,7 +338,7 @@ async def main():
     try:
         await bot.start(TOKEN)
     finally:
-        await tft.close_http_session()
+        pass
 
 
 if __name__ == "__main__":

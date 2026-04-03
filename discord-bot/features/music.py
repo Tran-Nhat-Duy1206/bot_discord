@@ -919,7 +919,8 @@ async def _play_next(bot: commands.Bot, guild: discord.Guild, player: Any):
     await _persist_guild_state(guild.id)
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     _load_music_config()
     monitor_task: Optional[asyncio.Task] = None
     persist_task: Optional[asyncio.Task] = None
@@ -1509,108 +1510,5 @@ def setup(bot: commands.Bot):
         e.add_field(name="Track", value=st.current.title, inline=False)
         await interaction.followup.send(embed=e, ephemeral=True)
 
-    @bot.tree.command(name="set_dj_role", description="Đặt DJ role cho music")
-    @app_commands.describe(role="Role được quyền điều khiển nhạc")
-    async def set_dj_role(interaction: discord.Interaction, role: discord.Role):
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message(embed=_embed("❌ Không hợp lệ", "Chỉ dùng trong server."), ephemeral=True)
-        if not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message(embed=_embed("❌ Không có quyền", "Cần Manage Server."), ephemeral=True)
-        cfg = _guild_cfg(interaction.guild.id)
-        cfg["dj_role_id"] = role.id
-        _save_music_config()
-        await interaction.response.send_message(embed=_embed("🎛️ DJ Role", f"Đã đặt DJ role: {role.mention}"))
-
-    @bot.tree.command(name="clear_dj_role", description="Xóa DJ role restriction")
-    async def clear_dj_role(interaction: discord.Interaction):
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message(embed=_embed("❌ Không hợp lệ", "Chỉ dùng trong server."), ephemeral=True)
-        if not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message(embed=_embed("❌ Không có quyền", "Cần Manage Server."), ephemeral=True)
-        cfg = _guild_cfg(interaction.guild.id)
-        cfg["dj_role_id"] = 0
-        _save_music_config()
-        await interaction.response.send_message(embed=_embed("🎛️ DJ Role", "Đã tắt DJ role restriction."))
-
-    @bot.tree.command(name="music_health", description="Kiểm tra trạng thái Lavalink node")
-    async def music_health(interaction: discord.Interaction):
-        if wavelink is None:
-            return await interaction.response.send_message(
-                embed=_embed("❌ Thiếu wavelink", "Cài: `pip install wavelink`"),
-                ephemeral=True,
-            )
-
-        total, connected, lines = _node_status_lines()
-        desc = "\n".join(lines)
-        e = _embed("🩺 Music Health", desc if desc else "Không có dữ liệu node.")
-        e.add_field(name="Configured Nodes", value=str(len(_parse_lavalink_nodes())), inline=True)
-        e.add_field(name="Redis", value="ON" if _redis_on() else "OFF", inline=True)
-        e.add_field(name="Primary URI", value=LAVALINK_URI, inline=False)
-        e.add_field(name="Connected", value=f"{connected}/{total}", inline=True)
-        e.add_field(name="Healthcheck", value=f"{max(10, LAVALINK_HEALTHCHECK_INTERVAL)}s", inline=True)
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
-    @bot.tree.command(name="music_metrics", description="Xem metrics music runtime")
-    async def music_metrics(interaction: discord.Interaction):
-        resolve_avg = (MUSIC_METRICS.resolve_total_ms / MUSIC_METRICS.resolve_samples) if MUSIC_METRICS.resolve_samples else 0.0
-        wait_avg = (MUSIC_METRICS.queue_wait_total_sec / MUSIC_METRICS.queue_wait_samples) if MUSIC_METRICS.queue_wait_samples else 0.0
-        healthy_ratio = (MUSIC_METRICS.node_healthy_checks / MUSIC_METRICS.node_checks * 100.0) if MUSIC_METRICS.node_checks else 0.0
-        checked_ago = int(max(0.0, time.time() - MUSIC_METRICS.node_last_check_ts)) if MUSIC_METRICS.node_last_check_ts > 0 else -1
-
-        lines = [
-            f"Node health: **{MUSIC_METRICS.node_last_connected}/{MUSIC_METRICS.node_last_total}**",
-            f"Node uptime ratio: **{healthy_ratio:.1f}%** ({MUSIC_METRICS.node_healthy_checks}/{MUSIC_METRICS.node_checks} checks)",
-            f"Resolve latency: avg **{resolve_avg:.0f}ms**, last **{MUSIC_METRICS.resolve_last_ms:.0f}ms** ({MUSIC_METRICS.resolve_samples} samples)",
-            f"Queue wait: avg **{wait_avg:.1f}s**, last **{MUSIC_METRICS.queue_wait_last_sec:.1f}s** ({MUSIC_METRICS.queue_wait_samples} samples)",
-            f"Track start/exceptions: **{MUSIC_METRICS.track_start_count}/{MUSIC_METRICS.track_exception_count}**",
-            f"Resolve cache hit/miss: **{MUSIC_METRICS.resolve_cache_hits}/{MUSIC_METRICS.resolve_cache_misses}**",
-            f"Spotify cache hit/miss: **{MUSIC_METRICS.spotify_cache_hits}/{MUSIC_METRICS.spotify_cache_misses}**",
-            f"Queue restored guilds: **{MUSIC_METRICS.queue_restore_guilds}**",
-        ]
-        if checked_ago >= 0:
-            lines.append(f"Last node check: **{checked_ago}s ago**")
-
-        e = _embed("📈 Music Metrics", "\n".join(lines))
-        e.add_field(name="Rate limit", value=f"user={MUSIC_RATE_LIMIT_USER_SEC:.1f}s • guild={MUSIC_RATE_LIMIT_GUILD_SEC:.1f}s", inline=False)
-        e.add_field(name="Cache policy", value=_playlist_invalidation_policy(), inline=False)
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
-    @bot.tree.command(name="music_cache", description="Xem/clear cache music")
-    @app_commands.describe(action="info hoặc clear")
-    async def music_cache(interaction: discord.Interaction, action: str = "info"):
-        act = (action or "info").strip().lower()
-        if act not in {"info", "clear"}:
-            return await interaction.response.send_message(
-                embed=_embed("❌ Action không hợp lệ", "Dùng `info` hoặc `clear`."),
-                ephemeral=True,
-            )
-
-        if act == "info":
-            _cache_compact_local()
-            lines = [
-                f"Redis: **{'ON' if _redis_on() else 'OFF'}**",
-                f"Local resolve cache: **{len(_MUSIC_RESOLVE_CACHE)}**",
-                f"Local spotify cache: **{len(_MUSIC_SPOTIFY_CACHE_LOCAL)}**",
-                f"Policy: `{_playlist_invalidation_policy()}`",
-            ]
-            return await interaction.response.send_message(embed=_embed("🗃️ Music Cache", "\n".join(lines)), ephemeral=True)
-
-        if not _is_dj_or_admin(interaction):
-            return await interaction.response.send_message(
-                embed=_embed("❌ Không có quyền", "Bạn cần DJ role hoặc quyền Admin để clear cache."),
-                ephemeral=True,
-            )
-
-        _MUSIC_RESOLVE_CACHE.clear()
-        _MUSIC_SPOTIFY_CACHE_LOCAL.clear()
-        _MUSIC_SPOTIFY_HOT_COUNTER.clear()
-
-        deleted = 0
-        if _redis_on():
-            deleted += await _redis_scan_delete(f"{MUSIC_REDIS_PREFIX}:resolve:*")
-            deleted += await _redis_scan_delete(f"{MUSIC_REDIS_PREFIX}:spotify_playlist:*")
-
-        await interaction.response.send_message(
-            embed=_embed("🧹 Music Cache", f"Đã clear cache local. Redis keys deleted: **{deleted}**"),
-            ephemeral=True,
-        )
+    # set_dj_role and clear_dj_role removed - command limit
+    # music_health and music_metrics removed - command limit

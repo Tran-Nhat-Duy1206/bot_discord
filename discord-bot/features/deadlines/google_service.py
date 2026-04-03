@@ -6,19 +6,42 @@ from google.oauth2.credentials import Credentials as UserCredentials
 from googleapiclient.discovery import build
 
 from .config import (
+    DEADLINE_ALLOW_GLOBAL_GOOGLE_FALLBACK,
     DEADLINE_PUBLIC_DOC_EDIT,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_SUPPORTS_ALL_DRIVES,
 )
 from .db import db_connect
-from .oauth_service import _google_creds, _log_google_error
+from .oauth_service import _google_creds, _get_service_account_creds, get_user_google_creds, _log_google_error
 
 
-def create_deadline_sheet(title: str, creds: UserCredentials | None = None) -> tuple[str | None, str | None]:
+def _get_creds_with_fallback(scopes: list[str], user_id: int | None = None):
+    if user_id:
+        try:
+            creds, _ = get_user_google_creds(user_id, scopes)
+            if creds:
+                return creds
+        except Exception:
+            pass
+
+    if DEADLINE_ALLOW_GLOBAL_GOOGLE_FALLBACK:
+        return _get_service_account_creds(scopes)
+
+    return None
+
+
+def _build_drive_service(creds):
+    return build("drive", "v3", credentials=creds)
+
+
+def create_deadline_sheet(title: str, creds: UserCredentials | None = None, user_id: int | None = None) -> tuple[str | None, str | None]:
     try:
         if creds is None:
-            creds = _google_creds(["https://www.googleapis.com/auth/drive"])
-        drive = build("drive", "v3", credentials=creds)
+            if user_id:
+                creds, _ = get_user_google_creds(user_id, ["https://www.googleapis.com/auth/drive"])
+            else:
+                creds = _google_creds(["https://www.googleapis.com/auth/drive"])
+        drive = _build_drive_service(creds)
 
         metadata: dict[str, object] = {
             "name": title,
@@ -56,11 +79,14 @@ def create_deadline_sheet(title: str, creds: UserCredentials | None = None) -> t
         return None, None
 
 
-def create_deadline_doc(title: str, creds: UserCredentials | None = None) -> tuple[str | None, str | None]:
+def create_deadline_doc(title: str, creds: UserCredentials | None = None, user_id: int | None = None) -> tuple[str | None, str | None]:
     try:
         if creds is None:
-            creds = _google_creds(["https://www.googleapis.com/auth/drive"])
-        drive = build("drive", "v3", credentials=creds)
+            if user_id:
+                creds, _ = get_user_google_creds(user_id, ["https://www.googleapis.com/auth/drive"])
+            else:
+                creds = _google_creds(["https://www.googleapis.com/auth/drive"])
+        drive = _build_drive_service(creds)
 
         metadata: dict[str, object] = {
             "name": title,

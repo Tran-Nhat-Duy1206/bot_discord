@@ -344,7 +344,8 @@ async def _set_ignored_channel(guild_id: int, channel_id: int, add: bool):
             await conn.commit()
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     async def _on_ready_once():
         await _ensure_db_ready()
 

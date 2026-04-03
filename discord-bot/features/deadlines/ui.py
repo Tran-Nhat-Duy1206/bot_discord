@@ -36,7 +36,15 @@ async def _send_resource_message(
     url: str,
 ) -> int | None:
     try:
-        msg = await target_channel.send(_resource_message(kind, url))
+        emoji = "📊" if kind == "sheet" else "📝"
+        name = "Google Sheet" if kind == "sheet" else "Google Docs"
+        embed = discord.Embed(
+            title=f"{emoji} Link nộp bài",
+            description=f"**{name}**: [Mở file]({url})",
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text=f"Deadline submission - {name}")
+        msg = await target_channel.send(embed=embed)
         try:
             await msg.pin(reason=f"Deadline submission {kind}")
         except Exception:
@@ -185,7 +193,8 @@ class DeadlineResourceButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild:
-            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+            embed = discord.Embed(description="❌ Chỉ dùng trong server.", color=discord.Color.red())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
 
@@ -212,7 +221,8 @@ class DeadlineResourceButton(discord.ui.Button):
 
             if not row:
                 conn.close()
-                return await interaction.followup.send("❌ Deadline không tồn tại.", ephemeral=True)
+                embed = discord.Embed(description="❌ Deadline không tồn tại.", color=discord.Color.red())
+                return await interaction.followup.send(embed=embed, ephemeral=True)
 
             (
                 title,
@@ -229,7 +239,8 @@ class DeadlineResourceButton(discord.ui.Button):
 
             if interaction.user.id != owner_id:
                 conn.close()
-                return await interaction.followup.send("❌ Chỉ owner mới tạo file nộp bài.", ephemeral=True)
+                embed = discord.Embed(description="❌ Chỉ owner mới tạo file nộp bài.", color=discord.Color.red())
+                return await interaction.followup.send(embed=embed, ephemeral=True)
 
             owner_creds = None
             owner_email = None
@@ -244,10 +255,8 @@ class DeadlineResourceButton(discord.ui.Button):
                     owner_creds = None
                 else:
                     conn.close()
-                    return await interaction.followup.send(
-                        f"❌ {cred_err}",
-                        ephemeral=True,
-                    )
+                    embed = discord.Embed(description=f"❌ {cred_err}", color=discord.Color.red())
+                    return await interaction.followup.send(embed=embed, ephemeral=True)
 
             target_channel = interaction.guild.get_channel(private_channel_id) if private_channel_id else None
             if target_channel is None:
@@ -256,10 +265,12 @@ class DeadlineResourceButton(discord.ui.Button):
             if self.action == "sheet":
                 if sheet_link:
                     conn.close()
-                    return await interaction.followup.send(
-                        f"📊 Sheet đã có rồi: {masked_link('link_sheet', sheet_link)}",
-                        ephemeral=True,
+                    embed = discord.Embed(
+                        title="📊 Sheet đã tồn tại",
+                        description=f"[Mở Google Sheet]({sheet_link})",
+                        color=discord.Color.orange(),
                     )
+                    return await interaction.followup.send(embed=embed, ephemeral=True)
 
                 file_id, file_link = create_deadline_sheet(
                     f"[DL-{self.deadline_id}] {title} - Sheet",
@@ -267,7 +278,8 @@ class DeadlineResourceButton(discord.ui.Button):
                 )
                 if not file_link:
                     conn.close()
-                    return await interaction.followup.send("❌ Không tạo được Google Sheet.", ephemeral=True)
+                    embed = discord.Embed(description="❌ Không tạo được Google Sheet.", color=discord.Color.red())
+                    return await interaction.followup.send(embed=embed, ephemeral=True)
 
                 msg_id = await _send_resource_message(target_channel, "sheet", file_link)
 
@@ -284,17 +296,21 @@ class DeadlineResourceButton(discord.ui.Button):
 
                 await refresh_deadline_announce_message(interaction.client, interaction.guild, self.deadline_id)
                 owner_note = f" (account: `{owner_email}`)" if owner_email else ""
-                return await interaction.followup.send(
-                    f"✅ Đã tạo Google Sheet{owner_note}: {masked_link('link_sheet', file_link)}",
-                    ephemeral=True,
+                embed = discord.Embed(
+                    title="✅ Đã tạo Google Sheet",
+                    description=f"[Mở Google Sheet]({file_link}){owner_note}",
+                    color=discord.Color.green(),
                 )
+                return await interaction.followup.send(embed=embed, ephemeral=True)
 
             if doc_link:
                 conn.close()
-                return await interaction.followup.send(
-                    f"📝 Docs đã có rồi: {masked_link('link_docs', doc_link)}",
-                    ephemeral=True,
+                embed = discord.Embed(
+                    title="📝 Docs đã tồn tại",
+                    description=f"[Mở Google Docs]({doc_link})",
+                    color=discord.Color.orange(),
                 )
+                return await interaction.followup.send(embed=embed, ephemeral=True)
 
             file_id, file_link = create_deadline_doc(
                 f"[DL-{self.deadline_id}] {title} - Docs",
@@ -302,7 +318,8 @@ class DeadlineResourceButton(discord.ui.Button):
             )
             if not file_link:
                 conn.close()
-                return await interaction.followup.send("❌ Không tạo được Google Docs.", ephemeral=True)
+                embed = discord.Embed(description="❌ Không tạo được Google Docs.", color=discord.Color.red())
+                return await interaction.followup.send(embed=embed, ephemeral=True)
 
             msg_id = await _send_resource_message(target_channel, "doc", file_link)
 
@@ -319,10 +336,12 @@ class DeadlineResourceButton(discord.ui.Button):
 
             await refresh_deadline_announce_message(interaction.client, interaction.guild, self.deadline_id)
             owner_note = f" (account: `{owner_email}`)" if owner_email else ""
-            return await interaction.followup.send(
-                f"✅ Đã tạo Google Docs{owner_note}: {masked_link('link_docs', file_link)}",
-                ephemeral=True,
+            embed = discord.Embed(
+                title="✅ Đã tạo Google Docs",
+                description=f"[Mở Google Docs]({file_link}){owner_note}",
+                color=discord.Color.green(),
             )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class DeadlineResourceView(discord.ui.View):
@@ -353,7 +372,8 @@ class DeadlineActionButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+            embed = discord.Embed(description="❌ Chỉ dùng trong server.", color=discord.Color.red())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         guild = interaction.guild
         deadline_id = self.deadline_id
@@ -368,7 +388,8 @@ class DeadlineActionButton(discord.ui.Button):
             row = cur.fetchone()
             if not row:
                 conn.close()
-                return await interaction.response.send_message("❌ Deadline không tồn tại.", ephemeral=True)
+                embed = discord.Embed(description="❌ Deadline không tồn tại.", color=discord.Color.red())
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             role_id, sheet_file_id = row
 
@@ -385,7 +406,12 @@ class DeadlineActionButton(discord.ui.Button):
                 except Exception:
                     pass
 
-                return await interaction.response.send_message("✅ Bạn đã tham gia deadline này.", ephemeral=True)
+                embed = discord.Embed(
+                    title="✅ Tham gia thành công",
+                    description="Bạn đã tham gia deadline này.",
+                    color=discord.Color.green(),
+                )
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             cur.execute(
                 "DELETE FROM deadline_members WHERE deadline_id=? AND user_id=?",
@@ -397,7 +423,12 @@ class DeadlineActionButton(discord.ui.Button):
                 await remove_member(guild, role_id, interaction.user)
             except Exception:
                 pass
-            return await interaction.response.send_message("✅ Bạn đã rời deadline này.", ephemeral=True)
+            embed = discord.Embed(
+                title="👋 Đã rời deadline",
+                description="Bạn đã rời deadline này.",
+                color=discord.Color.orange(),
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
         if self.action == "members":
             conn = db_connect()
@@ -414,10 +445,20 @@ class DeadlineActionButton(discord.ui.Button):
             conn.close()
 
             if not ids:
-                return await interaction.response.send_message("Chưa có ai tham gia.", ephemeral=True)
+                embed = discord.Embed(
+                    title="👥 Thành viên",
+                    description="Chưa có ai tham gia.",
+                    color=discord.Color.orange(),
+                )
+                return await interaction.response.send_message(embed=embed, ephemeral=True)
 
             text = "\n".join(f"• <@{uid}>" for uid in ids)
-            return await interaction.response.send_message(f"👥 Thành viên (tối đa 25):\n{text}", ephemeral=True)
+            embed = discord.Embed(
+                title="👥 Thành viên (tối đa 25)",
+                description=text,
+                color=discord.Color.blurple(),
+            )
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 class DeadlineJoinView(discord.ui.View):
@@ -431,11 +472,12 @@ class DeadlineJoinView(discord.ui.View):
         self.add_item(DeadlineActionButton(self.deadline_id, "members", label="Members", style=discord.ButtonStyle.primary, emoji="👥"))
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        embed = discord.Embed(description="❌ Có lỗi khi xử lý nút.", color=discord.Color.red())
         try:
             if interaction.response.is_done():
-                await interaction.followup.send("❌ Có lỗi khi xử lý nút.", ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
             else:
-                await interaction.response.send_message("❌ Có lỗi khi xử lý nút.", ephemeral=True)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception:
             pass
 

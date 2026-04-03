@@ -1,9 +1,10 @@
 discord.py
-aiohttp
 python-dotenv
-requests
-tzdata
-google-api-python-client
+yt-dlp
+aiohttp
+wavelink
+PyNaCl
+aiosqlite
 google-auth
 google-auth-oauthlib
-Pillow
+google-api-python-client

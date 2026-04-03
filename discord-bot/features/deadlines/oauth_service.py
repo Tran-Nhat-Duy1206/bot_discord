@@ -16,6 +16,7 @@ from .config import (
     GOOGLE_OAUTH_CLIENT_SECRET_FILE,
     GOOGLE_OAUTH_REDIRECT_URI,
     GOOGLE_OAUTH_TOKEN_FILE,
+    GOOGLE_SERVICE_ACCOUNT_FILE,
     GOOGLE_USER_SCOPES,
     VN_TZ,
     abs_path,
@@ -93,15 +94,37 @@ def _google_creds(scopes: list[str]):
     return creds
 
 
-def _google_oauth_flow(scopes: list[str], state: str | None = None):
+def _get_service_account_creds(scopes: list[str]):
+    from google.oauth2 import service_account
+
+    sa_file = abs_path(GOOGLE_SERVICE_ACCOUNT_FILE)
+    if not sa_file or not os.path.exists(sa_file):
+        return None
+
+    try:
+        creds = service_account.Credentials.from_service_account_file(sa_file, scopes=scopes)
+        return creds
+    except Exception as error:
+        _log_google_error("service_account", error)
+        return None
+
+
+def _google_oauth_flow(scopes: list[str], state: str | None = None, code_verifier: str | None = None):
     client_secret_file = abs_path(GOOGLE_OAUTH_CLIENT_SECRET_FILE)
     if not client_secret_file or not os.path.exists(client_secret_file):
         raise FileNotFoundError("Thiếu credentials OAuth client (keys/credentials.json).")
+
+    kwargs = {}
+    if code_verifier:
+        kwargs['code_verifier'] = code_verifier
+    else:
+        kwargs['autogenerate_code_verifier'] = True
 
     flow = Flow.from_client_secrets_file(
         client_secret_file,
         scopes=scopes,
         state=state,
+        **kwargs,
     )
     flow.redirect_uri = GOOGLE_OAUTH_REDIRECT_URI
     return flow
@@ -116,12 +139,14 @@ def start_user_google_link(user_id: int) -> tuple[str | None, str | None]:
             prompt="consent",
         )
 
+        code_verifier = flow.code_verifier
+
         conn = db_connect()
         cur = conn.cursor()
         cur.execute("DELETE FROM user_google_oauth_states WHERE user_id=?", (int(user_id),))
         cur.execute(
-            "INSERT OR REPLACE INTO user_google_oauth_states(state, user_id, created_at) VALUES(?, ?, ?)",
-            (str(state), int(user_id), datetime.now(VN_TZ).isoformat()),
+            "INSERT OR REPLACE INTO user_google_oauth_states(state, code_verifier, user_id, created_at) VALUES(?, ?, ?, ?)",
+            (str(state), code_verifier, int(user_id), datetime.now(VN_TZ).isoformat()),
         )
         conn.commit()
         conn.close()
@@ -151,19 +176,20 @@ def verify_user_google_link(user_id: int, oauth_input: str, state: str | None = 
 
         conn = db_connect()
         cur = conn.cursor()
-        cur.execute("SELECT state FROM user_google_oauth_states WHERE user_id=?", (int(user_id),))
+        cur.execute("SELECT state, code_verifier FROM user_google_oauth_states WHERE user_id=?", (int(user_id),))
         row = cur.fetchone()
         if not row:
             conn.close()
             return False, "Không tìm thấy phiên đăng nhập. Hãy chạy `/deadline_google_login` lại."
 
         expected_state = str(row[0])
+        code_verifier = row[1]
         actual_state = (state or url_state or "").strip()
         if actual_state != expected_state:
             conn.close()
             return False, "State OAuth không khớp. Hãy chạy `/deadline_google_login` lại."
 
-        flow = _google_oauth_flow(GOOGLE_USER_SCOPES, state=expected_state)
+        flow = _google_oauth_flow(GOOGLE_USER_SCOPES, state=expected_state, code_verifier=code_verifier)
         flow.fetch_token(code=code)
         creds = flow.credentials
         if not creds:
@@ -173,9 +199,10 @@ def verify_user_google_link(user_id: int, oauth_input: str, state: str | None = 
         oauth2 = build("oauth2", "v2", credentials=creds)
         info = oauth2.userinfo().get().execute()
         email = str(info.get("email", "")).strip().lower()
-        if not email:
+        google_sub = str(info.get("sub", "")).strip()
+        if not email or not google_sub:
             conn.close()
-            return False, "Không lấy được email Google account."
+            return False, "Không lấy được thông tin Google account."
 
         now_iso = datetime.now(VN_TZ).isoformat()
         scopes = ",".join(sorted(str(scope) for scope in (creds.scopes or GOOGLE_USER_SCOPES)))
@@ -187,15 +214,16 @@ def verify_user_google_link(user_id: int, oauth_input: str, state: str | None = 
 
         cur.execute(
             """
-            INSERT INTO user_google_accounts(user_id, google_email, token_json, scopes, is_default, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, google_email)
+            INSERT INTO user_google_accounts(user_id, google_sub, google_email, token_json, scopes, is_default, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, google_sub)
             DO UPDATE SET
+                google_email=excluded.google_email,
                 token_json=excluded.token_json,
                 scopes=excluded.scopes,
                 updated_at=excluded.updated_at
             """,
-            (int(user_id), email, token_json, scopes, is_default, now_iso, now_iso),
+            (int(user_id), google_sub, email, token_json, scopes, is_default, now_iso, now_iso),
         )
 
         cur.execute("DELETE FROM user_google_oauth_states WHERE user_id=?", (int(user_id),))
@@ -212,7 +240,7 @@ def list_user_google_accounts(user_id: int):
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT google_email, is_default, updated_at
+        SELECT google_sub, google_email, is_default, updated_at
         FROM user_google_accounts
         WHERE user_id=?
         ORDER BY is_default DESC, google_email ASC

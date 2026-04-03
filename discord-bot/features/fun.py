@@ -20,7 +20,8 @@ def _get_json(url: str, timeout: int = 10) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     @bot.tree.command(name="coinflip", description="Tung đồng xu")
     async def coinflip(interaction: discord.Interaction):
         result = random.choice(["Ngửa", "Sấp"])

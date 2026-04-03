@@ -109,27 +109,32 @@ def db_init():
         CREATE TABLE IF NOT EXISTS user_google_accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
+            google_sub TEXT NOT NULL,
             google_email TEXT NOT NULL,
             token_json TEXT NOT NULL,
             scopes TEXT NOT NULL,
             is_default INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            UNIQUE(user_id, google_email)
+            UNIQUE(user_id, google_sub)
         )
         """
     )
+    try:
+        cur.execute("ALTER TABLE user_google_accounts ADD COLUMN google_sub TEXT")
+    except Exception:
+        pass
 
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS user_google_oauth_states (
             state TEXT PRIMARY KEY,
+            code_verifier TEXT,
             user_id INTEGER NOT NULL,
             created_at TEXT NOT NULL
         )
         """
     )
-
     for ddl in (
         "CREATE INDEX IF NOT EXISTS idx_deadlines_guild_done_due ON deadlines(guild_id, done, due_at)",
         "CREATE INDEX IF NOT EXISTS idx_deadline_notifs_due_retry ON deadline_notifs(sent, notify_at, next_try_at)",
@@ -137,6 +142,7 @@ def db_init():
         "CREATE INDEX IF NOT EXISTS idx_deadline_members_user_deadline ON deadline_members(user_id, deadline_id)",
         "CREATE INDEX IF NOT EXISTS idx_user_google_accounts_user_default ON user_google_accounts(user_id, is_default)",
         "CREATE INDEX IF NOT EXISTS idx_user_google_oauth_states_user_created ON user_google_oauth_states(user_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_user_google_accounts_user_sub ON user_google_accounts(user_id, google_sub)",
     ):
         cur.execute(ddl)
 

@@ -229,7 +229,8 @@ async def _send_mod_log(guild: discord.Guild, embed: discord.Embed):
         pass
 
 
-def setup(bot: commands.Bot):
+def setup(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     async def _on_ready_once():
         global _MOD_DB_READY
         if _MOD_DB_READY:

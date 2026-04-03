@@ -50,7 +50,8 @@ def _quest_lines(rows) -> list[str]:
     return lines
 
 
-def register_quest_commands(bot: commands.Bot):
+def register_quest_commands(bot: commands.Bot, guilds: list = None):
+    guilds = guilds or []
     @bot.tree.command(name="quest", description="Xem quest RPG")
     async def quest(interaction: discord.Interaction):
         if interaction.guild is None:
