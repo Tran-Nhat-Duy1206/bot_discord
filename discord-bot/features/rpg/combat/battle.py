@@ -1,4 +1,4 @@
-from .data import roll_damage
+from ..data.data import roll_damage
 
 
 def run_battle_turns(

@@ -1,5 +1,5 @@
-from .data import SKILLS
-from .db import get_unlocked_skills, cooldown_remain, set_cooldown
+from ..data.data import SKILLS
+from ..db.db import get_unlocked_skills, cooldown_remain, set_cooldown
 
 
 def _clamp(value: float, upper: float) -> float:

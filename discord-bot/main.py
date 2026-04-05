@@ -39,7 +39,7 @@ bot = commands.Bot(command_prefix="-", intents=intents, help_command=None)
 _START_TS = time.time()
 
 try:
-    from features import economy, moderation, leveling, rpg, utility, music, ai, fun
+    from features import economy, moderation, leveling, rpg, utility, music, fun
 except ImportError:
     try:
         from features import economy
@@ -48,19 +48,16 @@ except ImportError:
         from features import rpg
         from features import utility
         from features import music
-        from features import ai
         from features import fun
     except ImportError as e:
         logger.error(f"Failed to import required modules: {e}")
         raise
-
-# deadlines.setup(bot, GUILDS)
+    
 moderation.setup(bot, GUILDS)
 leveling.setup(bot, GUILDS)
 rpg.setup(bot, GUILDS)
 utility.setup(bot, GUILDS)
 music.setup(bot, GUILDS)
-ai.setup(bot, GUILDS)
 fun.setup(bot, GUILDS)
 
 @bot.event
@@ -260,18 +257,6 @@ async def help_cmd(interaction: discord.Interaction):
             "`/lyrics` lyrics bài hiện tại\n"
             "`/set_dj_role` `/clear_dj_role` quyền DJ\n"
             "`/stop` `/leave` dừng và rời"
-        ),
-        inline=False,
-    )
-    e.add_field(
-        name="🧠 AI",
-        value=(
-            "`/ai_chat` hỏi đáp với AI\n"
-            "`/ai_summarize` tóm tắt nội dung\n"
-            "`/ai_translate` dịch ngôn ngữ\n"
-            "`/ai_explain_code` giải thích code\n"
-            "`/ai_image` tạo ảnh AI\n"
-            "`/ai_memory_clear` xóa memory theo channel"
         ),
         inline=False,
     )

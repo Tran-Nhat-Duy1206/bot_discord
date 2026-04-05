@@ -7,54 +7,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .assets import apply_embed_asset, apply_item_asset, apply_monster_asset, reload_assets
-from .combatlog import build_combat_log_text, publish_combat_log
-from .data import ITEMS, MONSTERS, BOSS_VARIANTS, CRAFT_RECIPES, SKILLS, xp_need_for_next
-from .hunt import simulate_hunt
-from .boss import simulate_boss
-from .dungeon import simulate_dungeon
-from .coop import simulate_party_hunt
-from .events import current_weekly_event, event_brief
-from .crafting import list_recipes, get_recipe, craft_recipe
-from .equipment import equipped_profile, equip_item, unequip_slot
-from .commands_reports import register_reports_commands
-from .commands_season import register_season_commands
-from .commands_combat import register_combat_commands
-from .commands_quests import register_quest_commands
-from .db import (
-    DB_WRITE_LOCK,
-    RPG_HUNT_COOLDOWN,
-    RPG_DAILY_COOLDOWN,
-    RPG_DAILY_GOLD,
-    RPG_BOSS_COOLDOWN,
-    RPG_DUNGEON_COOLDOWN,
-    RPG_PARTY_HUNT_COOLDOWN,
-    RPG_LOOTBOX_DAILY_LIMIT,
-    RPG_PAY_MIN_LEVEL,
-    RPG_PAY_MIN_ACCOUNT_AGE_SECS,
-    RPG_PAY_DAILY_SEND_LIMIT,
-    RPG_PAY_DAILY_PAIR_LIMIT,
-    ensure_db_ready,
-    open_db,
-    ensure_player,
-    ensure_default_quests,
-    refresh_quests_if_needed,
-    get_player,
-    get_unlocked_skills,
-    unlock_skill,
-    get_rpg_transfer_stats,
-    record_rpg_transfer,
-    record_gold_flow,
-    utc_day_start,
-    consume_lootbox_open_limit,
-    set_cooldown,
-    cooldown_remain,
-    add_inventory,
-    remove_inventory,
-    gain_xp_and_level,
-    fmt_secs,
-)
-from .skills import skill_profile, use_active_skill
+from .utils.assets import apply_embed_asset, apply_item_asset, apply_monster_asset, reload_assets
+from .utils.combatlog import build_combat_log_text, publish_combat_log
+from .data.data import ITEMS, CRAFT_RECIPES, SKILLS, xp_need_for_next
+from .utils.events import event_brief
+from .db.db import ensure_db_ready, open_db
+
+from .services.combat_service import CombatService
+from .services.economy_service import EconomyService
+from .services.quest_service import QuestService
+from .services.player_service import PlayerService
 
 
 RPG_COMMAND_RATE_USER_MAX = 12
@@ -66,42 +28,14 @@ _USER_RATE_BUCKET: dict[int, deque[float]] = defaultdict(deque)
 _GUILD_RATE_BUCKET: dict[int, deque[float]] = defaultdict(deque)
 
 RPG_COMMAND_NAMES = {
-    "rpg_assets_reload",
-    "rpg_start",
-    "profile",
-    "stats",
-    "rpg_balance",
-    "rpg_daily",
-    "rpg_pay",
-    "rpg_shop",
-    "craft_list",
-    "craft",
-    "rpg_buy",
-    "rpg_sell",
-    "rpg_inventory",
-    "rpg_equipment",
-    "equip",
-    "unequip",
-    "rpg_skills",
-    "rpg_skill_unlock",
-    "rpg_skill_use",
-    "rpg_use",
-    "open",
-    "rpg_drop",
-    "rpg_event",
-    "hunt",
-    "boss",
-    "dungeon",
-    "party_hunt",
-    "quest",
-    "quest_claim",
-    "rpg_loot",
-    "rpg_balance_dashboard",
-    "rpg_economy_audit",
-    "rpg_season_status",
-    "rpg_season_rollover",
-    "rpg_jackpot",
-    "rpg_leaderboard",
+    "rpg_assets_reload", "rpg_start", "profile", "stats", "rpg_balance",
+    "rpg_daily", "rpg_pay", "rpg_shop", "craft_list", "craft",
+    "rpg_buy", "rpg_sell", "rpg_inventory", "rpg_equipment",
+    "equip", "unequip", "rpg_skills", "rpg_skill_unlock", "rpg_skill_use",
+    "rpg_use", "open", "rpg_drop", "rpg_event", "hunt", "boss",
+    "dungeon", "party_hunt", "quest", "quest_claim",
+    "rpg_loot", "rpg_balance_dashboard", "rpg_economy_audit",
+    "rpg_season_status", "rpg_season_rollover", "rpg_jackpot", "rpg_leaderboard",
 }
 
 
@@ -118,99 +52,13 @@ def _item_label(item_id: str) -> str:
     return f"{item['emoji']} {item['name']}"
 
 
-_MONSTER_NAME = {str(m.get("id")): str(m.get("name")) for m in (MONSTERS + BOSS_VARIANTS)}
-
-
 def _collect_files(*files: discord.File | None) -> list[discord.File]:
     return [f for f in files if f is not None]
 
 
-def _quest_lines(rows) -> list[str]:
-    names = {
-        "kill_monsters": "Hạ quái",
-        "kill_slime": "Hạ Slime Jackpot",
-        "hunt_runs": "Chạy hunt",
-        "open_lootboxes": "Mở lootbox",
-        "boss_wins": "Thắng boss",
-    }
-    lines: list[str] = []
-    now = int(time.time())
-    claimed_map = {str(r[0]): int(r[9]) for r in rows}
-    for qid, objective, target, progress, reward_gold, reward_xp, period, reset_after, prereq_quest_id, claimed in rows:
-        prereq = str(prereq_quest_id or "")
-        is_locked = bool(prereq) and claimed_map.get(prereq, 0) == 0
-        if is_locked:
-            status = f"🔒 Locked (need `{prereq}`)"
-        else:
-            status = "✅ Claimed" if int(claimed) == 1 else ("🎯 Ready" if int(progress) >= int(target) else "⏳ In progress")
-        period_txt = ""
-        if str(period) in {"daily", "weekly"} and int(reset_after or 0) > now:
-            period_txt = f" • reset <t:{int(reset_after)}:R>"
-        lines.append(
-            f"`{qid}` • **{names.get(objective, objective)}** {progress}/{target}\n"
-            f"Reward: {reward_gold} gold + {reward_xp} xp • {status}{period_txt}"
-        )
-    return lines
-
-
-async def _open_lootboxes(conn, guild_id: int, user_id: int, amount: int) -> tuple[bool, str]:
-    if amount <= 0:
-        return False, "Amount phải > 0."
-
-    ok = await remove_inventory(conn, guild_id, user_id, "lootbox", amount)
-    if not ok:
-        return False, "Bạn không đủ lootbox."
-
-    allowed, remain_after = await consume_lootbox_open_limit(conn, guild_id, user_id, amount)
-    if not allowed:
-        await add_inventory(conn, guild_id, user_id, "lootbox", amount)
-        return False, f"Đã chạm limit mở lootbox trong ngày. Còn mở được: **{remain_after}**/{RPG_LOOTBOX_DAILY_LIMIT}"
-
-    total_gold = 0
-    bonus_items: list[str] = []
-    for _ in range(amount):
-        roll = random.random()
-        if roll < 0.58:
-            total_gold += random.randint(45, 140)
-        elif roll < 0.88:
-            await add_inventory(conn, guild_id, user_id, "potion", 1)
-            bonus_items.append("🧪 Potion")
-        elif roll < 0.98:
-            await add_inventory(conn, guild_id, user_id, "rare_crystal", 1)
-            bonus_items.append("💎 Rare Crystal")
-        else:
-            await add_inventory(conn, guild_id, user_id, "lucky_ring", 1)
-            bonus_items.append("💍 Lucky Ring")
-
-    if total_gold > 0:
-        await conn.execute(
-            "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
-            (total_gold, guild_id, user_id),
-        )
-        await record_gold_flow(conn, guild_id, user_id, total_gold, "lootbox_open")
-
-    await add_quest_progress(conn, guild_id, user_id, "open_lootboxes", amount)
-
-    msg = f"🎁 Mở lootbox x{amount}: +{total_gold} gold"
-    if bonus_items:
-        msg += "\n" + "\n".join(f"- {x}" for x in bonus_items)
-    msg += f"\nDaily limit còn lại: **{remain_after}**/{RPG_LOOTBOX_DAILY_LIMIT}"
-    return True, msg
-
-
 def _rarity_emoji(rarity: str) -> str:
     r = (rarity or "common").lower()
-    if r == "common":
-        return "⚪"
-    if r == "uncommon":
-        return "🟢"
-    if r == "rare":
-        return "🔵"
-    if r == "epic":
-        return "🟣"
-    if r == "legendary":
-        return "🟡"
-    return "⚫"
+    return {"common": "⚪", "uncommon": "🟢", "rare": "🔵", "epic": "🟣", "legendary": "🟡"}.get(r, "⚫")
 
 
 def _to_pct(value: float) -> int:
@@ -218,11 +66,7 @@ def _to_pct(value: float) -> int:
 
 
 def _passive_text(lifesteal: float, crit_bonus: float, damage_reduction: float) -> str:
-    return (
-        f"Lifesteal +{_to_pct(lifesteal)}% • "
-        f"Crit +{_to_pct(crit_bonus)}% • "
-        f"Damage Reduction {_to_pct(damage_reduction)}%"
-    )
+    return f"Lifesteal +{_to_pct(lifesteal)}% • Crit +{_to_pct(crit_bonus)}% • Damage Reduction {_to_pct(damage_reduction)}%"
 
 
 def _as_str_list(value) -> list[str]:
@@ -240,57 +84,6 @@ def _rate_check(bucket: dict[int, deque[float]], key: int, now_ts: float, window
         return max(0.1, float(window) - (now_ts - q[0]))
     q.append(now_ts)
     return 0.0
-
-
-async def _profile_embed(guild: discord.Guild, target: discord.Member) -> tuple[discord.Embed | None, list[discord.File]]:
-    await ensure_db_ready()
-    async with open_db() as conn:
-        await ensure_player(conn, guild.id, target.id)
-        await ensure_default_quests(conn, guild.id, target.id)
-        await refresh_quests_if_needed(conn, guild.id, target.id)
-        row = await get_player(conn, guild.id, target.id)
-        profile = await equipped_profile(conn, guild.id, target.id)
-        sprofile = await skill_profile(conn, guild.id, target.id)
-        bonus_atk = int(profile["attack"])
-        bonus_def = int(profile["defense"])
-        bonus_hp = int(profile["hp"])
-        equipped = profile["equipped"]
-        lifesteal = float(profile["lifesteal"])
-        crit_bonus = float(profile["crit_bonus"])
-        damage_reduction = float(profile["damage_reduction"])
-        active_set = profile.get("set_bonus") if isinstance(profile.get("set_bonus"), dict) else None
-        passive_skills = sprofile.get("passives", []) if isinstance(sprofile.get("passives"), list) else []
-        await conn.commit()
-
-    if not row:
-        return None, []
-
-    level, xp, hp, max_hp, attack, defense, gold = map(int, row)
-    eff_hp = min(max_hp + bonus_hp, hp + bonus_hp)
-    eff_max_hp = max_hp + bonus_hp
-    eff_attack = attack + bonus_atk
-    eff_defense = defense + bonus_def
-
-    equip_text = []
-    for slot in ("weapon", "armor", "accessory"):
-        item_id = equipped.get(slot)
-        equip_text.append(f"{slot}: {_item_label(item_id) if item_id else '(empty)'}")
-
-    e = discord.Embed(title=f"🧙 RPG Profile - {target.display_name}", color=discord.Color.blurple())
-    e.add_field(name="Level", value=str(level), inline=True)
-    e.add_field(name="XP", value=f"{xp}/{xp_need_for_next(level)}", inline=True)
-    e.add_field(name="Gold", value=str(gold), inline=True)
-    e.add_field(name="HP", value=f"{eff_hp}/{eff_max_hp}", inline=True)
-    e.add_field(name="Attack", value=f"{eff_attack} (base {attack})", inline=True)
-    e.add_field(name="Defense", value=f"{eff_defense} (base {defense})", inline=True)
-    e.add_field(name="Equipment", value="\n".join(equip_text), inline=False)
-    e.add_field(name="Combat Passive", value=_passive_text(lifesteal, crit_bonus, damage_reduction), inline=False)
-    if active_set:
-        e.add_field(name="Set Bonus", value=f"🧩 {active_set.get('name', 'Unknown Set')}", inline=False)
-    if passive_skills:
-        e.add_field(name="Skill Passive", value="\n".join(f"• {name}" for name in passive_skills), inline=False)
-    f = apply_embed_asset(e, "profile")
-    return e, _collect_files(f)
 
 
 async def autocomplete_item(_: discord.Interaction, current: str):
@@ -330,8 +123,85 @@ async def autocomplete_skill(_: discord.Interaction, current: str):
     return out[:25]
 
 
+def _build_hunt_embed(result, interaction: discord.Interaction) -> tuple[discord.Embed, list[discord.File]]:
+    drops = result.drops if isinstance(result.drops, dict) else {}
+    drop_txt = ", ".join(f"{_item_label(item_id)} x{amount}" for item_id, amount in drops.items()) if drops else "Không có"
+    rarity_map = result.drop_rarity if isinstance(result.drop_rarity, dict) else {}
+    rarity_txt = ", ".join(f"{_rarity_emoji(str(k))} {str(k)} x{int(v)}" for k, v in rarity_map.items()) if rarity_map else "(none)"
+
+    e = discord.Embed(title="⚔️ Kết quả Hunt", color=discord.Color.red())
+    e.add_field(name="Đã gặp", value=f"{result.pack} quái", inline=True)
+    e.add_field(name="Hạ gục", value=str(result.kills), inline=True)
+    e.add_field(name="Slime", value=str(result.slime_kills), inline=True)
+    e.add_field(name="Reward", value=f"+{result.gold} gold\n+{result.xp} xp", inline=False)
+    e.add_field(name="Combat Passive", value=_passive_text(result.combat_effects.lifesteal, result.combat_effects.crit_bonus, result.combat_effects.damage_reduction), inline=False)
+    if result.set_bonus:
+        e.add_field(name="Set Bonus", value=f"🧩 {result.set_bonus}", inline=False)
+    if result.weekly_event:
+        e.add_field(name="Weekly Event", value=str(result.weekly_event.get("name", "Weekly Event")), inline=False)
+    if result.passive_skills:
+        e.add_field(name="Skill Passive", value="\n".join(f"• {s}" for s in result.passive_skills[:3]), inline=False)
+    if result.lifesteal_heal > 0 or result.damage_blocked > 0:
+        e.add_field(name="Passive Impact", value=f"❤️ +{result.lifesteal_heal} HP lifesteal • 🛡️ chặn {result.damage_blocked} dmg", inline=False)
+    e.add_field(name="Drops", value=drop_txt, inline=False)
+    e.add_field(name="Drop Rarity", value=rarity_txt, inline=False)
+    if result.jackpot_hits > 0:
+        e.add_field(name="Slime Jackpot", value=f"✨ {result.jackpot_hits} hit(s), +{result.jackpot_gold} gold", inline=False)
+    e.add_field(name="HP còn lại", value=str(result.hp), inline=True)
+    if result.leveled_up:
+        e.add_field(name="Level Up", value=f"🎉 Lên level **{result.level}**", inline=True)
+    if result.logs:
+        e.add_field(name="Chi tiết", value="\n".join(result.logs[:10]), inline=False)
+
+    encounters = result.encounters if isinstance(result.encounters, dict) else {}
+    encounter_ids = list(encounters.keys())
+    hunt_asset_file = apply_monster_asset(e, encounter_ids[0]) if encounter_ids else None
+    if hunt_asset_file is None:
+        hunt_asset_file = apply_embed_asset(e, "hunt")
+
+    return e, _collect_files(hunt_asset_file)
+
+
+def _build_boss_embed(result, interaction: discord.Interaction) -> tuple[discord.Embed, list[discord.File]]:
+    is_win = result.win
+    e = discord.Embed(title="👑 Boss Victory" if is_win else "💀 Boss Defeat", color=discord.Color.orange() if is_win else discord.Color.dark_red())
+    if not is_win:
+        e.description = f"Bạn đã thua trước **{result.boss}**.\nHP còn lại: **{result.base_hp}**"
+    else:
+        e.add_field(name="Boss", value=str(result.boss), inline=True)
+        e.add_field(name="Reward", value=f"+{result.gold} gold\n+{result.xp} xp", inline=False)
+
+    e.add_field(name="Combat Passive", value=_passive_text(result.combat_effects.lifesteal, result.combat_effects.crit_bonus, result.combat_effects.damage_reduction), inline=False)
+    if result.set_bonus:
+        e.add_field(name="Set Bonus", value=f"🧩 {result.set_bonus}", inline=False)
+    if result.weekly_event:
+        e.add_field(name="Weekly Event", value=str(result.weekly_event.get("name", "Weekly Event")), inline=False)
+    if result.passive_skills:
+        e.add_field(name="Skill Passive", value="\n".join(f"• {s}" for s in result.passive_skills[:3]), inline=False)
+    if result.lifesteal_heal > 0 or result.damage_blocked > 0:
+        e.add_field(name="Passive Impact", value=f"❤️ +{result.lifesteal_heal} HP lifesteal • 🛡️ chặn {result.damage_blocked} dmg", inline=False)
+    e.add_field(name="Boss Mechanics", value=f"Rage: {'Yes' if result.rage_triggered else 'No'} • Shield turns: {result.shield_turns} • Summons: {result.summon_count}", inline=False)
+    if result.phase_events:
+        e.add_field(name="Mechanic Timeline", value="\n".join(result.phase_events[:4]), inline=False)
+    drops = result.drops if isinstance(result.drops, dict) else {}
+    if drops:
+        e.add_field(name="Drops", value=", ".join(f"{_item_label(k)} x{v}" for k, v in drops.items()), inline=False)
+    e.add_field(name="HP còn lại", value=str(result.base_hp), inline=True)
+    if result.leveled_up:
+        e.add_field(name="Level Up", value=f"🎉 Lên level **{result.level}**", inline=True)
+    if result.logs:
+        e.add_field(name="Chi tiết", value="\n".join(result.logs[:8]), inline=False)
+
+    boss_asset_file = apply_monster_asset(e, result.boss_id)
+    if boss_asset_file is None:
+        boss_asset_file = apply_embed_asset(e, "boss")
+
+    return e, _collect_files(boss_asset_file)
+
+
 def setup(bot: commands.Bot, guilds: list = None):
     guilds = guilds or []
+
     async def _rpg_rate_limit_check(interaction: discord.Interaction) -> bool:
         cmd = interaction.command
         cmd_name = str(getattr(cmd, "name", "")).strip().lower()
@@ -339,29 +209,14 @@ def setup(bot: commands.Bot, guilds: list = None):
             return True
 
         now_ts = time.time()
-        user_wait = _rate_check(
-            _USER_RATE_BUCKET,
-            interaction.user.id,
-            now_ts,
-            RPG_COMMAND_RATE_USER_WINDOW,
-            RPG_COMMAND_RATE_USER_MAX,
-        )
+        user_wait = _rate_check(_USER_RATE_BUCKET, interaction.user.id, now_ts, RPG_COMMAND_RATE_USER_WINDOW, RPG_COMMAND_RATE_USER_MAX)
         if user_wait > 0:
             raise app_commands.CheckFailure(f"⏳ Bạn thao tác RPG quá nhanh. Thử lại sau {user_wait:.1f}s.")
 
         if interaction.guild is not None:
-            guild_wait = _rate_check(
-                _GUILD_RATE_BUCKET,
-                interaction.guild.id,
-                now_ts,
-                RPG_COMMAND_RATE_GUILD_WINDOW,
-                RPG_COMMAND_RATE_GUILD_MAX,
-            )
+            guild_wait = _rate_check(_GUILD_RATE_BUCKET, interaction.guild.id, now_ts, RPG_COMMAND_RATE_GUILD_WINDOW, RPG_COMMAND_RATE_GUILD_MAX)
             if guild_wait > 0:
-                raise app_commands.CheckFailure(
-                    f"⏳ Server đang spam RPG command. Thử lại sau {guild_wait:.1f}s."
-                )
-
+                raise app_commands.CheckFailure(f"⏳ Server đang spam RPG command. Thử lại sau {guild_wait:.1f}s.")
         return True
 
     bot.tree.interaction_check = _rpg_rate_limit_check
@@ -377,11 +232,11 @@ def setup(bot: commands.Bot, guilds: list = None):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
         await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                await ensure_default_quests(conn, interaction.guild.id, interaction.user.id)
-                await conn.commit()
+        async with open_db() as conn:
+            from .repositories import player_repo, quest_repo
+            await player_repo.ensure_player_ready(conn, interaction.guild.id, interaction.user.id)
+            await quest_repo.ensure_default_quests(conn, interaction.guild.id, interaction.user.id)
+            await conn.commit()
         await interaction.response.send_message("✅ Đã tạo nhân vật RPG! Dùng `/profile` hoặc `/hunt`.", ephemeral=True)
 
     @bot.tree.command(name="profile", description="Xem hồ sơ RPG")
@@ -393,69 +248,57 @@ def setup(bot: commands.Bot, guilds: list = None):
         if target is None:
             return await interaction.response.send_message("❌ Không xác định được member.", ephemeral=True)
 
-        e, files = await _profile_embed(interaction.guild, target)
-        if e is None:
+        result = await PlayerService.get_profile(interaction.guild.id, target.id)
+        if not result.ok:
             return await interaction.response.send_message("❌ Không lấy được dữ liệu nhân vật.", ephemeral=True)
-        await interaction.response.send_message(embed=e, files=files)
+
+        eff_hp = min(result.max_hp, result.hp)
+        eff_max_hp = result.max_hp
+        eff_attack = result.attack + int(result.equipped.get("attack", 0)) if isinstance(result.equipped, dict) else result.attack
+        eff_defense = result.defense + int(result.equipped.get("defense", 0)) if isinstance(result.equipped, dict) else result.defense
+
+        equip_text = []
+        if isinstance(result.equipped, dict):
+            for slot in ("weapon", "armor", "accessory"):
+                item_id = result.equipped.get(slot)
+                equip_text.append(f"{slot}: {_item_label(item_id) if item_id else '(empty)'}")
+        else:
+            equip_text.append("(no equipment data)")
+
+        e = discord.Embed(title=f"🧙 RPG Profile - {target.display_name}", color=discord.Color.blurple())
+        e.add_field(name="Level", value=str(result.level), inline=True)
+        e.add_field(name="XP", value=f"{result.xp}/{result.xp_need}", inline=True)
+        e.add_field(name="Gold", value=str(result.gold), inline=True)
+        e.add_field(name="HP", value=f"{eff_hp}/{eff_max_hp}", inline=True)
+        e.add_field(name="Attack", value=f"{eff_attack} (base {result.attack})", inline=True)
+        e.add_field(name="Defense", value=f"{eff_defense} (base {result.defense})", inline=True)
+        e.add_field(name="Equipment", value="\n".join(equip_text), inline=False)
+        e.add_field(name="Combat Passive", value=_passive_text(result.lifesteal, result.crit_bonus, result.damage_reduction), inline=False)
+        if result.set_bonus:
+            e.add_field(name="Set Bonus", value=f"🧩 {result.set_bonus}", inline=False)
+        if result.passive_skills:
+            e.add_field(name="Skill Passive", value="\n".join(f"• {name}" for name in result.passive_skills), inline=False)
+        f = apply_embed_asset(e, "profile")
+        await interaction.response.send_message(embed=e, files=_collect_files(f))
 
     @bot.tree.command(name="stats", description="Xem chỉ số chiến đấu RPG")
     @app_commands.describe(member="Xem stats người khác")
     async def stats(interaction: discord.Interaction, member: Optional[discord.Member] = None):
-        if interaction.guild is None:
-            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        target = _member_or_self(interaction, member)
-        if target is None:
-            return await interaction.response.send_message("❌ Không xác định được member.", ephemeral=True)
-        e, files = await _profile_embed(interaction.guild, target)
-        if e is None:
-            return await interaction.response.send_message("❌ Không lấy được dữ liệu nhân vật.", ephemeral=True)
-        await interaction.response.send_message(embed=e, files=files)
+        await profile(interaction, member)
 
     @bot.tree.command(name="rpg_balance", description="Xem số vàng RPG")
     async def rpg_balance(interaction: discord.Interaction):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        await ensure_db_ready()
-        async with open_db() as conn:
-            row = await get_player(conn, interaction.guild.id, interaction.user.id)
-        gold = int(row[6]) if row else 0
+        gold = await EconomyService.get_balance(interaction.guild.id, interaction.user.id)
         await interaction.response.send_message(f"💰 Bạn có **{gold}** gold RPG.", ephemeral=True)
 
     @bot.tree.command(name="rpg_daily", description="Nhận daily vàng RPG")
     async def rpg_daily(interaction: discord.Interaction):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        await ensure_db_ready()
-
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                remain = await cooldown_remain(conn, interaction.guild.id, interaction.user.id, "daily")
-                if remain > 0:
-                    return await interaction.response.send_message(
-                        f"⏳ Daily cooldown: **{fmt_secs(remain)}**",
-                        ephemeral=True,
-                    )
-
-                await conn.execute(
-                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
-                    (RPG_DAILY_GOLD, interaction.guild.id, interaction.user.id),
-                )
-                await record_gold_flow(
-                    conn,
-                    interaction.guild.id,
-                    interaction.user.id,
-                    RPG_DAILY_GOLD,
-                    "daily_reward",
-                )
-                await set_cooldown(conn, interaction.guild.id, interaction.user.id, "daily", RPG_DAILY_COOLDOWN)
-                row = await get_player(conn, interaction.guild.id, interaction.user.id)
-                await conn.commit()
-        balance_now = int(row[6]) if row else 0
-        await interaction.response.send_message(
-            f"🎁 Nhận **{RPG_DAILY_GOLD}** gold. Số dư: **{balance_now}**",
-            ephemeral=True,
-        )
+        result = await EconomyService.claim_daily(interaction.guild.id, interaction.user.id)
+        await interaction.response.send_message(result.message, ephemeral=True)
 
     @bot.tree.command(name="rpg_pay", description="Chuyển vàng RPG")
     @app_commands.describe(member="Người nhận", amount="Số vàng")
@@ -467,91 +310,11 @@ def setup(bot: commands.Bot, guilds: list = None):
         if amount <= 0:
             return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
 
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await conn.execute("SAVEPOINT rpg_pay")
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                await ensure_player(conn, interaction.guild.id, member.id)
-
-                async with conn.execute(
-                    "SELECT user_id, level, gold, created_at FROM players WHERE guild_id = ? AND user_id IN (?, ?)",
-                    (interaction.guild.id, interaction.user.id, member.id),
-                ) as cur:
-                    rows = await cur.fetchall()
-
-                pmap = {int(uid): (int(level), int(gold), int(created_at)) for uid, level, gold, created_at in rows}
-                sender = pmap.get(interaction.user.id)
-                receiver = pmap.get(member.id)
-                if sender is None or receiver is None:
-                    await conn.execute("ROLLBACK TO rpg_pay")
-                    await conn.execute("RELEASE rpg_pay")
-                    return await interaction.response.send_message("❌ Không đọc được dữ liệu người chơi.", ephemeral=True)
-
-                sender_level, bal, sender_created_at = sender
-                receiver_level, _, receiver_created_at = receiver
-                if sender_level < RPG_PAY_MIN_LEVEL or receiver_level < RPG_PAY_MIN_LEVEL:
-                    await conn.execute("ROLLBACK TO rpg_pay")
-                    await conn.execute("RELEASE rpg_pay")
-                    return await interaction.response.send_message(
-                        f"❌ Cả 2 người cần tối thiểu level **{RPG_PAY_MIN_LEVEL}** để dùng `/rpg_pay`.",
-                        ephemeral=True,
-                    )
-
-                now_ts = int(time.time())
-                sender_age = now_ts - sender_created_at
-                receiver_age = now_ts - receiver_created_at
-                if sender_age < RPG_PAY_MIN_ACCOUNT_AGE_SECS or receiver_age < RPG_PAY_MIN_ACCOUNT_AGE_SECS:
-                    await conn.execute("ROLLBACK TO rpg_pay")
-                    await conn.execute("RELEASE rpg_pay")
-                    return await interaction.response.send_message(
-                        "❌ Tài khoản RPG quá mới để giao dịch. Hãy chơi thêm trước khi chuyển vàng.",
-                        ephemeral=True,
-                    )
-
-                day_since = utc_day_start(now_ts)
-                sent_today, pair_today = await get_rpg_transfer_stats(
-                    conn,
-                    interaction.guild.id,
-                    interaction.user.id,
-                    member.id,
-                    day_since,
-                )
-                if sent_today + amount > RPG_PAY_DAILY_SEND_LIMIT:
-                    await conn.execute("ROLLBACK TO rpg_pay")
-                    await conn.execute("RELEASE rpg_pay")
-                    remain = max(0, RPG_PAY_DAILY_SEND_LIMIT - sent_today)
-                    return await interaction.response.send_message(
-                        f"❌ Chạm giới hạn chuyển vàng/ngày. Còn lại hôm nay: **{remain}**.",
-                        ephemeral=True,
-                    )
-                if pair_today + amount > RPG_PAY_DAILY_PAIR_LIMIT:
-                    await conn.execute("ROLLBACK TO rpg_pay")
-                    await conn.execute("RELEASE rpg_pay")
-                    remain = max(0, RPG_PAY_DAILY_PAIR_LIMIT - pair_today)
-                    return await interaction.response.send_message(
-                        f"❌ Giao dịch với người này đã chạm limit/ngày. Còn lại: **{remain}**.",
-                        ephemeral=True,
-                    )
-
-                if bal < amount:
-                    await conn.execute("ROLLBACK TO rpg_pay")
-                    await conn.execute("RELEASE rpg_pay")
-                    return await interaction.response.send_message("❌ Bạn không đủ vàng.", ephemeral=True)
-
-                await conn.execute(
-                    "UPDATE players SET gold = gold - ? WHERE guild_id = ? AND user_id = ?",
-                    (amount, interaction.guild.id, interaction.user.id),
-                )
-                await conn.execute(
-                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
-                    (amount, interaction.guild.id, member.id),
-                )
-                await record_rpg_transfer(conn, interaction.guild.id, interaction.user.id, member.id, amount)
-                await conn.execute("RELEASE rpg_pay")
-                await conn.commit()
-
-        await interaction.response.send_message(f"💸 Đã chuyển **{amount}** gold cho {member.mention}")
+        result = await EconomyService.transfer_gold(interaction.guild.id, interaction.user.id, member.id, amount)
+        if result.ok:
+            await interaction.response.send_message(f"💸 Đã chuyển **{amount}** gold cho {member.mention}")
+        else:
+            await interaction.response.send_message(result.message, ephemeral=True)
 
     @bot.tree.command(name="rpg_shop", description="Xem shop RPG")
     async def rpg_shop(interaction: discord.Interaction):
@@ -569,9 +332,8 @@ def setup(bot: commands.Bot, guilds: list = None):
 
     @bot.tree.command(name="craft_list", description="Xem công thức craft RPG")
     async def craft_list(interaction: discord.Interaction):
-        recipes = list_recipes()
         lines = []
-        for r in recipes:
+        for r in CRAFT_RECIPES:
             rid = str(r.get("id", ""))
             name = str(r.get("name", rid))
             req = r.get("requires", {}) or {}
@@ -580,7 +342,6 @@ def setup(bot: commands.Bot, guilds: list = None):
             out = r.get("output", {}) or {}
             out_txt = ", ".join(f"{_item_label(str(k))} x{int(v)}" for k, v in out.items()) if out else "(none)"
             lines.append(f"`{rid}` • **{name}**\nNeed: {req_txt}\nCost: {gold} gold\nOutput: {out_txt}")
-
         e = discord.Embed(title="🛠️ Craft Recipes", description="\n\n".join(lines), color=discord.Color.orange())
         f = apply_embed_asset(e, "shop")
         await interaction.response.send_message(embed=e, files=_collect_files(f))
@@ -591,31 +352,8 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def craft(interaction: discord.Interaction, recipe_id: str, amount: int = 1):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        if amount <= 0:
-            return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                ok, payload = await craft_recipe(conn, interaction.guild.id, interaction.user.id, recipe_id, amount)
-                if not ok:
-                    await conn.rollback()
-                    return await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
-                recipe = get_recipe(recipe_id)
-                if recipe:
-                    cost_gold = int(recipe.get("gold", 0)) * amount
-                    if cost_gold > 0:
-                        await record_gold_flow(
-                            conn,
-                            interaction.guild.id,
-                            interaction.user.id,
-                            -cost_gold,
-                            "craft_cost",
-                        )
-                await conn.commit()
-
-        await interaction.response.send_message(f"✅ Craft thành công `{recipe_id}` x{amount}.")
+        result = await EconomyService.craft_item(interaction.guild.id, interaction.user.id, recipe_id, amount)
+        await interaction.response.send_message(result.message, ephemeral=True)
 
     @bot.tree.command(name="rpg_buy", description="Mua item RPG")
     @app_commands.describe(item="Mã item", amount="Số lượng")
@@ -623,46 +361,14 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_buy(interaction: discord.Interaction, item: str, amount: int = 1):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        if amount <= 0:
-            return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
-        data = ITEMS.get(item)
-        if not data or int(data["buy"]) <= 0:
-            return await interaction.response.send_message("❌ Item không thể mua.", ephemeral=True)
-
-        total = int(data["buy"]) * amount
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await conn.execute("SAVEPOINT rpg_buy")
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-
-                async with conn.execute(
-                    "SELECT gold FROM players WHERE guild_id = ? AND user_id = ?",
-                    (interaction.guild.id, interaction.user.id),
-                ) as cur:
-                    row = await cur.fetchone()
-                gold = int(row[0]) if row else 0
-                if gold < total:
-                    await conn.execute("ROLLBACK TO rpg_buy")
-                    await conn.execute("RELEASE rpg_buy")
-                    return await interaction.response.send_message("❌ Không đủ vàng.", ephemeral=True)
-
-                await conn.execute(
-                    "UPDATE players SET gold = gold - ? WHERE guild_id = ? AND user_id = ?",
-                    (total, interaction.guild.id, interaction.user.id),
-                )
-                await record_gold_flow(conn, interaction.guild.id, interaction.user.id, -total, "shop_buy")
-                await add_inventory(conn, interaction.guild.id, interaction.user.id, item, amount)
-                await conn.execute("RELEASE rpg_buy")
-                await conn.commit()
-
-        e = discord.Embed(
-            title="✅ Mua thành công",
-            description=f"Đã mua {data['emoji']} **{data['name']}** x{amount} với giá **{total}** gold.",
-            color=discord.Color.green(),
-        )
-        f = apply_item_asset(e, item)
-        await interaction.response.send_message(embed=e, files=_collect_files(f))
+        ok, msg = await EconomyService.buy_item(interaction.guild.id, interaction.user.id, item, amount)
+        if ok:
+            data = ITEMS.get(item, {})
+            e = discord.Embed(title="✅ Mua thành công", description=msg, color=discord.Color.green())
+            f = apply_item_asset(e, item)
+            await interaction.response.send_message(embed=e, files=_collect_files(f))
+        else:
+            await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
 
     @bot.tree.command(name="rpg_sell", description="Bán item RPG")
     @app_commands.describe(item="Mã item", amount="Số lượng")
@@ -670,30 +376,11 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_sell(interaction: discord.Interaction, item: str, amount: int = 1):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        if amount <= 0:
-            return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
-        data = ITEMS.get(item)
-        if not data:
-            return await interaction.response.send_message("❌ Item không tồn tại.", ephemeral=True)
-        sell_price = int(data["sell"])
-        if sell_price <= 0:
-            return await interaction.response.send_message("❌ Item này không thể bán.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                ok = await remove_inventory(conn, interaction.guild.id, interaction.user.id, item, amount)
-                if not ok:
-                    return await interaction.response.send_message("❌ Bạn không đủ item để bán.", ephemeral=True)
-                total = sell_price * amount
-                await conn.execute(
-                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
-                    (total, interaction.guild.id, interaction.user.id),
-                )
-                await record_gold_flow(conn, interaction.guild.id, interaction.user.id, total, "shop_sell")
-                await conn.commit()
-        await interaction.response.send_message(f"💰 Đã bán **{data['name']}** x{amount}, nhận **{total}** gold.")
+        ok, msg, _ = await EconomyService.sell_item(interaction.guild.id, interaction.user.id, item, amount)
+        if ok:
+            await interaction.response.send_message(msg)
+        else:
+            await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
 
     @bot.tree.command(name="rpg_inventory", description="Xem inventory RPG")
     @app_commands.describe(member="Xem inventory người khác")
@@ -704,28 +391,12 @@ def setup(bot: commands.Bot, guilds: list = None):
         if target is None:
             return await interaction.response.send_message("❌ Không xác định được member.", ephemeral=True)
 
-        await ensure_db_ready()
-        async with open_db() as conn:
-            await ensure_player(conn, interaction.guild.id, target.id)
-            async with conn.execute(
-                """
-                SELECT item_id, amount FROM inventory
-                WHERE guild_id = ? AND user_id = ? AND amount > 0
-                ORDER BY amount DESC, item_id ASC
-                """,
-                (interaction.guild.id, target.id),
-            ) as cur:
-                rows = await cur.fetchall()
-
-        if not rows:
+        items = await PlayerService.get_inventory(interaction.guild.id, target.id)
+        if not items:
             return await interaction.response.send_message(f"🎒 {target.mention} chưa có item RPG.")
 
-        lines = [f"{_item_label(item_id)} x{amount}" for item_id, amount in rows]
-        e = discord.Embed(
-            title=f"🎒 RPG Inventory - {target.display_name}",
-            description="\n".join(lines),
-            color=discord.Color.green(),
-        )
+        lines = [f"{_item_label(item_id)} x{amount}" for item_id, amount in items]
+        e = discord.Embed(title=f"🎒 RPG Inventory - {target.display_name}", description="\n".join(lines), color=discord.Color.green())
         f = apply_embed_asset(e, "inventory")
         await interaction.response.send_message(embed=e, files=_collect_files(f))
 
@@ -738,38 +409,19 @@ def setup(bot: commands.Bot, guilds: list = None):
         if target is None:
             return await interaction.response.send_message("❌ Không xác định được member.", ephemeral=True)
 
-        await ensure_db_ready()
-        async with open_db() as conn:
-            await ensure_player(conn, interaction.guild.id, target.id)
-            profile = await equipped_profile(conn, interaction.guild.id, target.id)
-            sprofile = await skill_profile(conn, interaction.guild.id, target.id)
-
-        bonus_atk = int(profile["attack"])
-        bonus_def = int(profile["defense"])
-        bonus_hp = int(profile["hp"])
-        equipped = profile["equipped"]
-        lifesteal = float(profile["lifesteal"])
-        crit_bonus = float(profile["crit_bonus"])
-        damage_reduction = float(profile["damage_reduction"])
-        active_set = profile.get("set_bonus") if isinstance(profile.get("set_bonus"), dict) else None
-        skill_passives = sprofile.get("passives", []) if isinstance(sprofile.get("passives"), list) else []
-
+        result = await PlayerService.get_equipment(interaction.guild.id, target.id)
         lines = []
         for slot in ("weapon", "armor", "accessory"):
-            item_id = equipped.get(slot)
+            item_id = result.equipped.get(slot) if isinstance(result.equipped, dict) else None
             lines.append(f"**{slot}**: {_item_label(item_id) if item_id else '(empty)'}")
 
-        e = discord.Embed(
-            title=f"🧩 Equipment - {target.display_name}",
-            description="\n".join(lines),
-            color=discord.Color.purple(),
-        )
-        e.add_field(name="Bonus", value=f"ATK +{bonus_atk} • DEF +{bonus_def} • HP +{bonus_hp}", inline=False)
-        e.add_field(name="Passive", value=_passive_text(lifesteal, crit_bonus, damage_reduction), inline=False)
-        if active_set:
-            e.add_field(name="Set Bonus", value=f"🧩 {active_set.get('name', 'Unknown Set')}", inline=False)
-        if skill_passives:
-            e.add_field(name="Skill Passive", value="\n".join(f"• {name}" for name in skill_passives), inline=False)
+        e = discord.Embed(title=f"🧩 Equipment - {target.display_name}", description="\n".join(lines), color=discord.Color.purple())
+        e.add_field(name="Bonus", value=f"ATK +{result.bonus_atk} • DEF +{result.bonus_def} • HP +{result.bonus_hp}", inline=False)
+        e.add_field(name="Passive", value=_passive_text(result.lifesteal, result.crit_bonus, result.damage_reduction), inline=False)
+        if result.set_bonus:
+            e.add_field(name="Set Bonus", value=f"🧩 {result.set_bonus}", inline=False)
+        if result.passive_skills:
+            e.add_field(name="Skill Passive", value="\n".join(f"• {name}" for name in result.passive_skills), inline=False)
         await interaction.response.send_message(embed=e)
 
     @bot.tree.command(name="equip", description="Trang bị item RPG")
@@ -778,59 +430,30 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def equip(interaction: discord.Interaction, item: str):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                ok, payload = await equip_item(conn, interaction.guild.id, interaction.user.id, item)
-                if not ok:
-                    return await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
-                await conn.commit()
-
-        await interaction.response.send_message(f"✅ Đã trang bị `{item}` vào slot **{payload}**.")
+        ok, payload = await PlayerService.equip_item(interaction.guild.id, interaction.user.id, item)
+        if ok:
+            await interaction.response.send_message(f"✅ Đã trang bị `{item}` vào slot **{payload}**.")
+        else:
+            await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
 
     @bot.tree.command(name="unequip", description="Tháo trang bị theo slot")
     @app_commands.describe(slot="weapon / armor / accessory")
     async def unequip(interaction: discord.Interaction, slot: str):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                ok, payload = await unequip_slot(conn, interaction.guild.id, interaction.user.id, slot)
-                if not ok:
-                    return await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
-
-                # clamp base hp to max_hp after unequip
-                async with conn.execute(
-                    "SELECT hp, max_hp FROM players WHERE guild_id = ? AND user_id = ?",
-                    (interaction.guild.id, interaction.user.id),
-                ) as cur:
-                    row = await cur.fetchone()
-                hp = int(row[0]) if row else 1
-                max_hp = int(row[1]) if row else 100
-                if hp > max_hp:
-                    await conn.execute(
-                        "UPDATE players SET hp = ? WHERE guild_id = ? AND user_id = ?",
-                        (max_hp, interaction.guild.id, interaction.user.id),
-                    )
-                await conn.commit()
-
-        await interaction.response.send_message(f"✅ Đã tháo `{payload}` khỏi slot `{slot}`.")
+        ok, payload = await PlayerService.unequip_item(interaction.guild.id, interaction.user.id, slot)
+        if ok:
+            await interaction.response.send_message(f"✅ Đã tháo `{payload}` khỏi slot `{slot}`.")
+        else:
+            await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
 
     @bot.tree.command(name="rpg_skills", description="Xem danh sách skill RPG")
     async def rpg_skills(interaction: discord.Interaction):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with open_db() as conn:
-            row = await get_player(conn, interaction.guild.id, interaction.user.id)
-            level = int(row[0]) if row else 1
-            unlocked = await get_unlocked_skills(conn, interaction.guild.id, interaction.user.id)
+        data = await PlayerService.get_skills(interaction.guild.id, interaction.user.id)
+        level = data["level"]
+        unlocked = data["unlocked"]
 
         lines: list[str] = []
         for sid, skill in sorted(SKILLS.items(), key=lambda x: int(x[1].get("level_req", 1))):
@@ -848,11 +471,7 @@ def setup(bot: commands.Bot, guilds: list = None):
 
             lines.append(f"`{sid}` • **{name}** ({stype})\n{desc}\n{status}")
 
-        e = discord.Embed(
-            title=f"🧠 RPG Skills - Lv {level}",
-            description="\n\n".join(lines),
-            color=discord.Color.dark_teal(),
-        )
+        e = discord.Embed(title=f"🧠 RPG Skills - Lv {level}", description="\n\n".join(lines), color=discord.Color.dark_teal())
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     @bot.tree.command(name="rpg_skill_unlock", description="Mở khóa skill RPG")
@@ -861,32 +480,8 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_skill_unlock(interaction: discord.Interaction, skill_id: str):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-
-        skill = SKILLS.get(skill_id)
-        if not skill:
-            return await interaction.response.send_message("❌ Skill không tồn tại.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                row = await get_player(conn, interaction.guild.id, interaction.user.id)
-                level = int(row[0]) if row else 1
-                req = int(skill.get("level_req", 1))
-                if level < req:
-                    return await interaction.response.send_message(
-                        f"❌ Cần level **{req}** để unlock `{skill_id}`.",
-                        ephemeral=True,
-                    )
-
-                ok = await unlock_skill(conn, interaction.guild.id, interaction.user.id, skill_id)
-                if not ok:
-                    return await interaction.response.send_message("❌ Skill đã unlock trước đó.", ephemeral=True)
-                await conn.commit()
-
-        await interaction.response.send_message(
-            f"✅ Đã unlock skill **{skill.get('name', skill_id)}** (`{skill_id}`).",
-            ephemeral=True,
-        )
+        result = await PlayerService.unlock_skill(interaction.guild.id, interaction.user.id, skill_id)
+        await interaction.response.send_message(result.message, ephemeral=True)
 
     @bot.tree.command(name="rpg_skill_use", description="Dùng active skill RPG")
     @app_commands.describe(skill_id="ID active skill")
@@ -894,19 +489,8 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_skill_use(interaction: discord.Interaction, skill_id: str):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                row = await get_player(conn, interaction.guild.id, interaction.user.id)
-                level = int(row[0]) if row else 1
-                ok, msg = await use_active_skill(conn, interaction.guild.id, interaction.user.id, skill_id, level)
-                if not ok:
-                    await conn.rollback()
-                    return await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
-                await conn.commit()
-
-        await interaction.response.send_message(msg)
+        result = await PlayerService.use_skill(interaction.guild.id, interaction.user.id, skill_id)
+        await interaction.response.send_message(result.message)
 
     @bot.tree.command(name="rpg_use", description="Dùng item RPG")
     @app_commands.describe(item="Mã item", amount="Số lượng")
@@ -914,75 +498,16 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_use(interaction: discord.Interaction, item: str, amount: int = 1):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        if amount <= 0:
-            return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
-        data = ITEMS.get(item)
-        if not data:
-            return await interaction.response.send_message("❌ Item không tồn tại.", ephemeral=True)
-        if data.get("use") == "equip":
-            return await interaction.response.send_message(
-                "❌ Đây là trang bị. Dùng `/equip` để mặc đồ.",
-                ephemeral=True,
-            )
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                ok = await remove_inventory(conn, interaction.guild.id, interaction.user.id, item, amount)
-                if not ok:
-                    return await interaction.response.send_message("❌ Bạn không đủ item.", ephemeral=True)
-
-                use_type = data.get("use")
-                val = int(data.get("value", 0))
-
-                if use_type == "heal":
-                    async with conn.execute(
-                        "SELECT hp, max_hp FROM players WHERE guild_id = ? AND user_id = ?",
-                        (interaction.guild.id, interaction.user.id),
-                    ) as cur:
-                        row = await cur.fetchone()
-                    hp = int(row[0]) if row else 1
-                    max_hp = int(row[1]) if row else 100
-                    healed = min(max_hp - hp, val * amount)
-                    new_hp = hp + max(0, healed)
-                    await conn.execute(
-                        "UPDATE players SET hp = ? WHERE guild_id = ? AND user_id = ?",
-                        (new_hp, interaction.guild.id, interaction.user.id),
-                    )
-                    msg = f"❤️ Hồi **{healed} HP** ({new_hp}/{max_hp})"
-                elif use_type == "lootbox":
-                    ok_open, payload = await _open_lootboxes(conn, interaction.guild.id, interaction.user.id, amount)
-                    if not ok_open:
-                        await conn.rollback()
-                        return await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
-                    msg = payload
-                else:
-                    return await interaction.response.send_message("❌ Item này không dùng được.", ephemeral=True)
-
-                await conn.commit()
-
-        await interaction.response.send_message(msg)
+        ok, msg = await EconomyService.use_item(interaction.guild.id, interaction.user.id, item, amount)
+        await interaction.response.send_message(msg if ok else f"❌ {msg}", ephemeral=not ok)
 
     @bot.tree.command(name="open", description="Mở lootbox RPG")
     @app_commands.describe(amount="Số lootbox muốn mở")
     async def open_lootbox(interaction: discord.Interaction, amount: int = 1):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        if amount <= 0:
-            return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
-
-        await ensure_db_ready()
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                await ensure_player(conn, interaction.guild.id, interaction.user.id)
-                ok_open, payload = await _open_lootboxes(conn, interaction.guild.id, interaction.user.id, amount)
-                if not ok_open:
-                    await conn.rollback()
-                    return await interaction.response.send_message(f"❌ {payload}", ephemeral=True)
-                await conn.commit()
-
-        await interaction.response.send_message(payload)
+        result = await EconomyService.open_lootbox(interaction.guild.id, interaction.user.id, amount)
+        await interaction.response.send_message(result.message if result.ok else f"❌ {result.message}", ephemeral=not result.ok)
 
     @bot.tree.command(name="rpg_drop", description="Bỏ item RPG")
     @app_commands.describe(item="Mã item", amount="Số lượng")
@@ -990,19 +515,155 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_drop(interaction: discord.Interaction, item: str, amount: int = 1):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
-        if amount <= 0:
-            return await interaction.response.send_message("❌ Amount phải > 0.", ephemeral=True)
-        await ensure_db_ready()
+        ok, msg = await EconomyService.drop_item(interaction.guild.id, interaction.user.id, item, amount)
+        await interaction.response.send_message(msg if ok else f"❌ {msg}", ephemeral=not ok)
 
-        async with DB_WRITE_LOCK:
-            async with open_db() as conn:
-                ok = await remove_inventory(conn, interaction.guild.id, interaction.user.id, item, amount)
-                if not ok:
-                    return await interaction.response.send_message("❌ Bạn không đủ item để drop.", ephemeral=True)
-                await conn.commit()
-        await interaction.response.send_message(f"🗑️ Đã drop `{item}` x{amount}.")
+    @bot.tree.command(name="hunt", description="Đi săn quái RPG")
+    async def hunt(interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        await interaction.response.defer()
+        result = await CombatService.hunt(interaction.guild.id, interaction.user.id)
+        if not result.ok:
+            return await interaction.followup.send("❌ Hunt lỗi.", ephemeral=True)
+        e, files = _build_hunt_embed(result, interaction)
+        log_url = await publish_combat_log(build_combat_log_text(str(interaction.user), {
+            "pack": result.pack, "kills": result.kills, "slime_kills": result.slime_kills,
+            "gold": result.gold, "xp": result.xp, "hp": result.hp,
+            "encounters": result.encounters, "drops": result.drops, "logs": result.logs,
+        }))
+        e.add_field(name="Combat Log", value=f"🔗 {log_url}" if log_url else "(web log unavailable)", inline=False)
+        await interaction.followup.send(embed=e, files=files)
 
-    register_combat_commands(bot, guilds)
-    register_quest_commands(bot, guilds)
-    register_reports_commands(bot, guilds)
-    register_season_commands(bot, guilds)
+    @bot.tree.command(name="boss", description="Đánh boss RPG")
+    async def boss(interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        await interaction.response.defer()
+        result = await CombatService.boss(interaction.guild.id, interaction.user.id)
+        if not result.ok:
+            return await interaction.followup.send("❌ Boss battle lỗi.", ephemeral=True)
+        e, files = _build_boss_embed(result, interaction)
+        log_url = await publish_combat_log(build_combat_log_text(f"{interaction.user} [BOSS]", {
+            "gold": result.gold, "xp": result.xp, "drops": result.drops, "logs": result.logs,
+        }))
+        if log_url:
+            e.add_field(name="Combat Log", value=f"🔗 {log_url}", inline=False)
+        await interaction.followup.send(embed=e, files=files)
+
+    @bot.tree.command(name="dungeon", description="Chinh phục dungeon nhiều tầng")
+    async def dungeon(interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        await interaction.response.defer()
+        result = await CombatService.dungeon(interaction.guild.id, interaction.user.id)
+        if not result.ok:
+            return await interaction.followup.send("❌ Dungeon lỗi.", ephemeral=True)
+
+        e = discord.Embed(
+            title="🏰 Dungeon Cleared" if result.cleared else "🩸 Dungeon Failed",
+            color=discord.Color.green() if result.cleared else discord.Color.dark_red(),
+        )
+        e.add_field(name="Progress", value=f"{result.floors_cleared}/{result.total_floors} tầng", inline=True)
+        e.add_field(name="HP còn lại", value=str(result.hp), inline=True)
+        e.add_field(name="Reward", value=f"+{result.gold} gold\n+{result.xp} xp", inline=False)
+        drops = result.drops if isinstance(result.drops, dict) else {}
+        e.add_field(name="Drops", value=", ".join(f"{_item_label(k)} x{v}" for k, v in drops.items()) if drops else "Không có", inline=False)
+        e.add_field(name="Combat Passive", value=_passive_text(result.combat_effects.lifesteal, result.combat_effects.crit_bonus, result.combat_effects.damage_reduction), inline=False)
+        if result.set_bonus:
+            e.add_field(name="Set Bonus", value=f"🧩 {result.set_bonus}", inline=False)
+        if result.weekly_event:
+            e.add_field(name="Weekly Event", value=str(result.weekly_event.get("name", "Weekly Event")), inline=False)
+        if result.passive_skills:
+            e.add_field(name="Skill Passive", value="\n".join(f"• {s}" for s in result.passive_skills[:3]), inline=False)
+        if result.leveled_up:
+            e.add_field(name="Level Up", value=f"🎉 Lên level **{result.level}**", inline=True)
+        if result.logs:
+            e.add_field(name="Chi tiết", value="\n".join(result.logs[:8]), inline=False)
+        await interaction.followup.send(embed=e, files=_collect_files(apply_embed_asset(e, "hunt")))
+
+    @bot.tree.command(name="party_hunt", description="Co-op hunt 2-4 người")
+    @discord.app_commands.describe(member2="Thành viên thứ 2", member3="Thành viên thứ 3", member4="Thành viên thứ 4")
+    async def party_hunt(interaction: discord.Interaction, member2: discord.Member, member3: discord.Member | None = None, member4: discord.Member | None = None):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+
+        party = [interaction.user, member2]
+        if member3 is not None:
+            party.append(member3)
+        if member4 is not None:
+            party.append(member4)
+
+        unique_ids: set[int] = set()
+        clean_party: list[discord.Member] = []
+        for m in party:
+            if m.bot or m.id in unique_ids:
+                continue
+            unique_ids.add(m.id)
+            clean_party.append(m)
+        if len(clean_party) < 2:
+            return await interaction.response.send_message("❌ Party cần tối thiểu 2 người thật.", ephemeral=True)
+
+        await interaction.response.defer()
+        result = await CombatService.party_hunt(interaction.guild.id, [m.id for m in clean_party])
+        if not result.ok:
+            return await interaction.followup.send("❌ Party hunt lỗi.", ephemeral=True)
+
+        e = discord.Embed(title="🤝 Party Hunt", color=discord.Color.gold())
+        e.add_field(name="Party", value=", ".join(m.mention for m in clean_party), inline=False)
+        e.add_field(name="Kết quả", value=f"Kills: {result.kills}/{result.pack}\nGold tổng: +{result.gold}\nXP tổng: +{result.xp}", inline=False)
+        if result.members:
+            lines = []
+            for row in result.members[:4]:
+                if not isinstance(row, dict):
+                    continue
+                uid = int(row.get("user_id", 0))
+                m = interaction.guild.get_member(uid)
+                name = m.display_name if m else str(uid)
+                lines.append(f"**{name}**: +{int(row.get('gold', 0))}g, +{int(row.get('xp', 0))}xp, kills {int(row.get('kills', 0))}, hp {int(row.get('hp', 1))}")
+            if lines:
+                e.add_field(name="Theo thành viên", value="\n".join(lines), inline=False)
+        drops = result.drops if isinstance(result.drops, dict) else {}
+        e.add_field(name="Drops", value=", ".join(f"{_item_label(k)} x{v}" for k, v in drops.items()) if drops else "Không có", inline=False)
+        if result.weekly_event:
+            e.add_field(name="Weekly Event", value=str(result.weekly_event.get("name", "Weekly Event")), inline=False)
+        if result.logs:
+            e.add_field(name="Chi tiết", value="\n".join(result.logs[:8]), inline=False)
+        await interaction.followup.send(embed=e, files=_collect_files(apply_embed_asset(e, "hunt")))
+
+    @bot.tree.command(name="quest", description="Xem quest RPG")
+    async def quest(interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        quests = await QuestService.get_quests(interaction.guild.id, interaction.user.id)
+        quest_text = QuestService.format_quests(quests)
+        e = discord.Embed(title="📜 RPG Quests", description=quest_text, color=discord.Color.teal())
+        await interaction.response.send_message(embed=e, ephemeral=True, files=_collect_files(apply_embed_asset(e, "quest")))
+
+    @bot.tree.command(name="quest_claim", description="Nhận thưởng quest RPG")
+    @app_commands.describe(quest_id="ID quest, ví dụ: kill_10")
+    async def quest_claim(interaction: discord.Interaction, quest_id: str):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        result = await QuestService.claim_quest(interaction.guild.id, interaction.user.id, quest_id)
+        await interaction.response.send_message(result.message)
+
+    @bot.tree.command(name="rpg_loot", description="Xem loot table và rarity RPG")
+    async def rpg_loot(interaction: discord.Interaction):
+        rarity_order = ["common", "uncommon", "rare", "epic", "legendary"]
+        grouped: dict[str, list[str]] = {k: [] for k in rarity_order}
+
+        for key, item in ITEMS.items():
+            rarity = str(item.get("rarity", "common")).lower()
+            if rarity not in grouped:
+                grouped[rarity] = []
+            grouped[rarity].append(f"{item.get('emoji', '📦')} {item.get('name', key)} (`{key}`)")
+
+        e = discord.Embed(title="🎲 RPG Loot Table", color=discord.Color.blue())
+        for rarity in rarity_order:
+            values = grouped.get(rarity, [])
+            if not values:
+                continue
+            e.add_field(name=f"{_rarity_emoji(rarity)} {rarity.title()}", value="\n".join(values[:8]), inline=False)
+        f = apply_embed_asset(e, "inventory")
+        await interaction.response.send_message(embed=e, files=_collect_files(f))
