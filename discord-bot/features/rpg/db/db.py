@@ -4,7 +4,7 @@ import asyncio
 
 import aiosqlite
 
-from .data import QUEST_DEFINITIONS, xp_need_for_next
+from ..data.data import QUEST_DEFINITIONS, xp_need_for_next
 
 
 DB_PATH = os.getenv("RPG_DB", "data/rpg.db")

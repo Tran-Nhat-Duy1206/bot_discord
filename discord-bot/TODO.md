@@ -84,17 +84,6 @@
 
 ## Ưu tiên thấp
 
-### AI
-
-* [x] chat AI
-* [x] summarize
-* [x] translate
-* [x] explain code
-* [x] image generation
-* [x] conversation memory per channel
-
----
-
 ### Fun Commands
 
 * [x] meme
@@ -112,56 +101,6 @@
 * [x] userinfo
 * [x] serverinfo
 * [x] remind
-
----
-
-# Đã hoàn thành
-
-* [x] deadlines system
-* [x] TFT team/item system
-* [x] blackjack
-* [x] moderation system (core)
-* [x] leveling v1
-* [x] economy mở rộng v1
-* [x] RPG core modular package (`features/rpg/*`)
-
----
-
-# Chức năng tiếp theo
-
-## Roadmap cập nhật (gần nhất)
-
-* [x] Hoàn tất Music Scale-up (multi-node, metrics, rate-limit, Redis cache, queue recover)
-* [x] Hoàn tất AI phase 2 (`/ai_image`, memory theo channel, `/ai_memory_clear`)
-* [x] Hoàn tất Fun commands v1 (`/meme`, `/coinflip`, `/dice`, `/8ball`, `/trivia`)
-* [x] Deadline Google multi-account rollout (per-user account linking)
-* [ ] Deadline module refactor: tách `features/deadlines.py` thành package nhiều file
-* [ ] Roadmap kế tiếp ưu tiên: RPG phase 6 + RPG quality/balance
-* [ ] Sau RPG: Core bot cải thiện chung (test coverage, config, error policy)
-
-## Deadline Google multi-account
-
-* [x] DB schema cho 1 user nhiều Google account (`user_google_accounts`)
-* [x] DB schema lưu OAuth state tạm (`user_google_oauth_states`)
-* [x] Command `/deadline_google_login` để tạo link OAuth
-* [x] Command `/deadline_google_verify` để hoàn tất liên kết
-* [x] Command `/deadline_google_accounts` liệt kê account đã liên kết
-* [x] Command `/deadline_google_set_default` chọn account mặc định
-* [x] Command `/deadline_google_unlink` gỡ liên kết từng account
-* [x] Command `/deadline_google_import_global` để migrate token global nhanh
-* [x] Command `/deadline_google_use_account` chọn account theo từng deadline
-* [x] Tạo Sheet/Docs ưu tiên dùng account mặc định của owner deadline
-* [x] Migrate dữ liệu cũ từ token global sang account user (nếu cần)
-* [x] Bổ sung chọn account khi tạo tài liệu (phase 2)
-* [x] Mã hóa token_json trong DB (encryption at rest)
-
-## Deadline module refactor
-
-* [x] Tạo package `features/deadlines/`
-* [x] Di chuyển code cũ sang `features/deadlines/legacy.py`
-* [x] Tạo entrypoint `features/deadlines/__init__.py`
-* [x] Tách module `commands.py`, `google.py`, `oauth.py`, `storage.py`
-* [ ] Tiếp tục bóc tách logic từ `legacy.py` sang module chuyên biệt (db, views, scheduler, export)
 
 ## RPG phase 2
 
@@ -213,136 +152,270 @@
 * [x] Rà soát economy inflation (nguồn gold vs sink gold)
 * [x] Soft reset theo season + phần thưởng season
 
-## RPG dữ liệu & vận hành
+# 🚀 Discord Bot TODO (Refactored - Production Focus)
 
-* [ ] Version schema DB + migration script rõ ràng
-* [ ] Backup/restore dữ liệu RPG định kỳ
-* [ ] Command admin: sửa stats/player rollback
-* [ ] Command admin: grant/revoke item an toàn (audit log)
-* [ ] Audit log cho mọi thao tác economy/RPG nhạy cảm
-* [ ] Validate assets startup (file thiếu/corrupt -> cảnh báo)
+---
 
-## RPG UX/UI
+# 🎯 Mục tiêu chính
 
-* [ ] Embed theme thống nhất cho toàn bộ RPG
-* [ ] Pagination cho inventory/shop/quest dài
-* [ ] Nút tương tác cho hunt/boss result (replay/log/inventory)
-* [ ] Localized text (vi/en) theo guild config
-* [ ] Tối ưu thông báo lỗi thân thiện, có gợi ý command kế tiếp
+* Xây bot RPG có thể scale 100–500 user
+* Giữ user lâu (retention)
+* Kiếm tiền (monetization)
+* Code maintainable + ít bug
 
-## Core bot cải thiện chung
+---
 
-* [ ] Test coverage tối thiểu cho modules trọng yếu (rpg/economy/mod)
-* [ ] Smoke test command sau khi startup
-* [ ] Central config object thay vì đọc env rải rác
-* [ ] Chuẩn hoá error handling + retry policy
-* [ ] Giảm duplicate logic DB transaction giữa modules
-* [ ] Healthcheck command cho bot status/dependency
+# 🥇 PHASE 1 — STABILITY & SCALE (BẮT BUỘC)
 
-## Backlog tính năng khác (đề xuất)
+## 🔒 Concurrency & Data Safety (CRITICAL)
 
-* [ ] Economy market/auction house
-* [ ] Gacha banner theo season
-* [ ] Achievement system + title/badge
-* [ ] Pet companion system
-* [ ] Web dashboard quản trị RPG/economy
+* [x] User lock theo `user_id`
+* [x] Transaction wrapper chung cho DB (BEGIN / COMMIT / ROLLBACK)
+* [x] Đảm bảo mọi command RPG chạy trong transaction
+* [x] Anti double-spend (gold, item, reward)
 
-## Security
+---
 
-* [ ] Rate limit global (anti spam toàn bot)
-* [ ] Permission check decorator thống nhất
-* [ ] Validate input command (anti injection / crash)
-* [ ] Anti abuse economy (spam farm, macro)
-* [ ] Sensitive data protection (token/API key)
-* [ ] Command cooldown per user + per guild
-* [ ] Audit log cho admin command (ban/kick/give item)
+## ⚙️ Architecture (CLEAN CODE)
 
-## Architecture
+* [x] Tách Service Layer:
 
-* [ ] Service layer (business logic tách khỏi command)
-* [ ] Repository layer (DB access riêng)
-* [ ] DTO / schema validation (pydantic hoặc custom)
-* [ ] Dependency injection (inject service vào command)
-* [ ] Event system (emit event: on_battle_win, on_level_up)
+  * `combat_service.py`
+  * `economy_service.py`
+  * `quest_service.py`
+  * `player_service.py`
+* [x] Không để logic trong command
+* [x] Chuẩn hóa flow: load → process → save
+* [x] Repository Layer cho DB access
+* [x] Concurrent user lock (per-user locking)
+* [x] Transaction wrapper với user-level locks
+* [x] Tổ chức folder rõ ràng:
+  * `combat/` - battle, loot, equipment, skills
+  * `data/` - game configuration
+  * `db/` - database layer
+  * `models/` - data classes
+  * `repositories/` - DB access
+  * `services/` - business logic
+  * `utils/` - helpers
 
-## Database
+---
 
-* [ ] Index tối ưu query (user_id, guild_id)
-* [ ] Connection pool
-* [ ] Transaction wrapper chung
-* [ ] Data consistency check (fix lệch data)
-* [ ] Soft delete / recovery data
+## ⚡ Performance
 
-## Observability
+* [ ] Cache player (RAM cache)
+* [ ] Cache inventory
+* [ ] Giảm số lần query DB trong 1 command
+* [ ] Batch DB write (ghi 1 lần thay vì nhiều lần)
+
+---
+
+## 🧾 Logging & Debug
 
 * [ ] Structured logging (JSON log)
-* [ ] Trace command execution time
-* [ ] Error tracking (Sentry hoặc custom)
-* [ ] Metrics toàn bot (command usage, error rate)
-* [ ] Alert khi bot crash hoặc node chết
+* [ ] Log command usage
+* [ ] Log error rõ ràng
 
-## Testing
+---
+
+---
+
+# 🥈 PHASE 2 — GAMEPLAY & RETENTION
+
+## 🔁 Core Gameplay Loop
+
+* [ ] Daily reward
+* [ ] Daily streak system
+* [ ] Hunt → mạnh → boss → loot → repeat
+* [ ] Cooldown system chuẩn
+
+---
+
+## 🎮 Content giữ user
+
+* [ ] Boss rotation theo giờ
+* [ ] Dungeon scaling
+* [ ] Quest daily / weekly
+* [ ] Event system:
+
+  * double drop
+  * boss rush
+
+---
+
+## 🏆 Progression
+
+* [ ] Balance lại damage / drop rate
+* [ ] Improve loot rarity system
+* [ ] Leaderboard meaningful
+
+---
+
+---
+
+# 🥉 PHASE 3 — MONETIZATION (KIẾM TIỀN)
+
+## 💎 Premium Currency
+
+* [ ] Thêm `gem` vào player
+* [ ] Shop mua gem (manual hoặc tích hợp payment sau)
+* [ ] Dùng gem để:
+
+  * mở boss đặc biệt
+  * reset cooldown
+  * mua lootbox premium
+
+---
+
+## 👑 VIP System
+
+* [ ] Thêm `vip_expire`
+* [ ] Buff nhẹ:
+
+  * +XP
+  * +gold
+  * giảm cooldown
+* [ ] Không pay-to-win
+
+---
+
+## 🎟️ Battle Pass
+
+* [ ] Mission system
+* [ ] Tier reward (free + premium)
+* [ ] Reset theo season
+
+---
+
+## 🎨 Cosmetic
+
+* [ ] Title
+* [ ] Skin weapon
+* [ ] Effect combat
+
+---
+
+---
+
+# 🏅 PHASE 4 — SCALE & OPTIMIZATION
+
+## 📊 Observability
+
+* [ ] Track command execution time
+* [ ] Metrics:
+
+  * số user active
+  * tỉ lệ win/lose
+* [ ] Error tracking (Sentry hoặc custom)
+
+---
+
+## 🧾 Economy Safety
+
+* [ ] Audit log:
+
+  * gold flow
+  * item change
+* [ ] Detect abuse:
+
+  * spam command
+  * trade exploit
+
+---
+
+## ⚙️ DB Optimization
+
+* [ ] Index tối ưu query
+* [ ] Data consistency check
+* [ ] Cleanup data định kỳ
+
+---
+
+---
+
+# 🧱 PHASE 5 — DATA & ADMIN
+
+* [ ] DB schema versioning
+* [ ] Migration script
+* [ ] Backup / restore
+* [ ] Admin command:
+
+  * sửa stats
+  * rollback player
+* [ ] Grant/revoke item (có audit log)
+
+---
+
+---
+
+# 🚀 PHASE 6 — ADVANCED RPG (OPTIONAL)
+
+* [ ] Status effect (poison, burn, stun)
+* [ ] Turn order (speed stat)
+* [ ] Damage type (physical/magic)
+* [ ] Enemy AI pattern
+* [ ] World map / region
+* [ ] Guild / clan system
+
+---
+
+---
+
+# ❄️ TẠM HOÃN (KHÔNG LÀM NGAY)
+
+## ⛔ Không ưu tiên lúc này
+
+* [ ] Web dashboard
+* [ ] Plugin system
+* [ ] Multi-node phức tạp (trừ khi >1000 user)
+* [ ] Load test nặng
+* [ ] Full CI/CD pipeline
+* [ ] Music scale-up thêm (đã đủ rồi)
+
+---
+
+---
+
+# 🧪 TESTING (LÀM SAU KHI ỔN ĐỊNH)
 
 * [ ] Unit test cho service layer
-* [ ] Integration test cho DB
+* [ ] Integration test DB
 * [ ] Mock Discord API
-* [ ] Load test (spam command simulation)
-
-## DevOps
-
-* [ ] Dockerize bot
-* [ ] Docker Compose (bot + Redis + Lavalink)
-* [ ] CI/CD (GitHub Actions)
-* [ ] Auto restart khi crash
-* [ ] Env config theo môi trường (dev/prod)
-
-## RPG nâng cao (đáng thêm)
-
-* [ ] Status effect (poison, burn, stun, freeze)
-* [ ] Turn order (speed stat)
-* [ ] Damage type (physical/magic/true damage)
-* [ ] Enemy AI pattern (smart AI, không random)
-* [ ] World map / region (farm theo khu vực)
-* [ ] Daily login reward RPG riêng
-* [ ] Guild/clan system
-
-## Economy balance
-
-* [ ] Tax khi trade
-* [ ] Item degradation (đồ bị hỏng)
-* [ ] Repair system
-* [ ] Random event mất tiền (risk factor)
-* [ ] Limited shop rotation (FOMO)
-
-## AI nâng cao
-
-* [ ] Context-aware AI (biết user là ai)
-* [ ] AI moderation (detect toxic)
-* [ ] AI auto-reply theo channel topic
-* [ ] AI NPC trong RPG (chat + quest)
-
-## Developer Experience
-
-* [ ] CLI tool để chạy riêng từng module
-* [ ] Debug mode (verbose log)
-* [ ] Hot reload khi dev
-* [ ] Seed data generator
+* [ ] Spam test command (simulate user)
 
 ---
 
-# Ý tưởng tương lai
+---
 
-* [ ] web dashboard
-* [ ] slash command only
-* [ ] multi server support
-* [ ] permission system
-* [ ] plugin system
+# 🛠️ DEVOPS (TỐI THIỂU)
+
+* [ ] Auto restart bot khi crash
+* [ ] Healthcheck command
+* [ ] Env config dev/prod
 
 ---
 
-# Ghi chú
+---
 
-* Mỗi tính năng = 1 file trong features/
-* Không để code trong main.py
-* Dùng async/await
-* Log lỗi vào logs/bot.log
+# 🎯 NGUYÊN TẮC PHÁT TRIỂN
+
+* Không thêm feature khi chưa ổn định
+* Mỗi command = 1 flow rõ ràng
+* Load 1 lần → xử lý → save 1 lần
+* Ưu tiên:
+
+  1. Không bug
+  2. Không lag
+  3. User quay lại
+
+---
+
+---
+
+# 💬 Ghi chú
+
+* RPG là core product
+* Các module khác (music, fun, moderation) chỉ là phụ
+* Focus giữ user + kiếm tiền, không phải thêm feature
+
+---
+
