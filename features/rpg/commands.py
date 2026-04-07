@@ -467,6 +467,24 @@ class CombatDetailView(discord.ui.View):
                 pass
 
 
+async def _publish_combat_log(log_lines: list[str], lang: str = "en") -> str | None:
+    text = "\n".join(log_lines or []).strip()
+    if not text:
+        return None
+    try:
+        import aiohttp
+
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post("https://paste.rs", data=text.encode("utf-8")) as resp:
+                if resp.status < 200 or resp.status >= 300:
+                    return None
+                url = (await resp.text()).strip()
+                return url if url.startswith("http") else None
+    except Exception:
+        return None
+
+
 async def autocomplete_item(_: discord.Interaction, current: str):
     q = current.lower().strip()
     out: list[app_commands.Choice[str]] = []
@@ -607,7 +625,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         if interaction.guild is None:
             return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
         gold = await EconomyService.get_balance(interaction.guild.id, interaction.user.id)
-        msg = f"💰 Bạn có **{gold}** gold RPG." if lang == "vi" else f"💰 You have **{gold}** RPG gold."
+        msg = f"💰 Bạn có **{gold}** Slime Coin." if lang == "vi" else f"💰 You have **{gold}** Slime Coin."
         await interaction.response.send_message(msg, ephemeral=True)
 
     @bot.tree.command(name="rpg_daily", description=app_commands.locale_str("cmd.rpg_daily.desc"))
@@ -633,7 +651,7 @@ def setup(bot: commands.Bot, guilds: list = None):
 
         result = await EconomyService.transfer_gold(interaction.guild.id, interaction.user.id, member.id, amount, lang=lang)
         if result.ok:
-            msg = f"💸 Đã chuyển **{amount}** gold cho {member.mention}" if lang == "vi" else f"💸 Transferred **{amount}** gold to {member.mention}"
+            msg = f"💸 Đã chuyển **{amount}** Slime Coin cho {member.mention}" if lang == "vi" else f"💸 Transferred **{amount}** Slime Coin to {member.mention}"
             await interaction.response.send_message(msg)
         else:
             await interaction.response.send_message(result.message, ephemeral=True)
@@ -715,7 +733,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             gold = int(r.get("gold", 0))
             out = r.get("output", {}) or {}
             out_txt = ", ".join(f"{_item_label(str(k))} x{int(v)}" for k, v in out.items()) if out else "(none)"
-            lines.append(f"`{rid}` • **{name}**\nNeed: {req_txt}\nCost: {gold} gold\nOutput: {out_txt}")
+            lines.append(f"`{rid}` • **{name}**\nNeed: {req_txt}\nCost: {gold} Slime Coin\nOutput: {out_txt}")
         e = discord.Embed(title="🛠️ Craft Recipes", description="\n\n".join(lines), color=discord.Color.orange())
         f = apply_embed_asset(e, "shop")
         await interaction.response.send_message(embed=e, files=_collect_files(f))
@@ -940,6 +958,11 @@ def setup(bot: commands.Bot, guilds: list = None):
         await interaction.response.defer()
         result = await CombatService.hunt(interaction.guild.id, interaction.user.id, lang=lang)
         if not result.ok:
+            if int(getattr(result, "cooldown_remain", 0)) > 0:
+                return await interaction.followup.send(
+                    tr(lang, "rpg.hunt_cooldown", seconds=int(result.cooldown_remain)),
+                    ephemeral=True,
+                )
             return await interaction.followup.send(tr(lang, "rpg.hunt_unavailable"), ephemeral=True)
 
         team_lines = await _team_snapshot_lines(interaction.guild.id, interaction.user.id)
@@ -956,7 +979,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             + "\n+-------------------------------------------+\n"
             + f"| ENEMY : {enemy_text[:33]:33} |\n"
             + f"| CLEAR : {result.kills}/{result.pack} {progress_bar[:18]:18} |\n"
-            + f"| REWARD: +{result.gold}g  +{result.xp}xp{' ' * 20} |\n"
+            + f"| REWARD: +{result.gold} SC  +{result.xp}xp{' ' * 18} |\n"
             + f"| DROPS : {drop_line[:33]:33} |\n"
             + "+-------------------------------------------+\n"
             + "```"
@@ -966,7 +989,11 @@ def setup(bot: commands.Bot, guilds: list = None):
             title="⚔️ Team Hunt Report" if lang == "en" else "⚔️ Báo cáo săn đội",
             color=discord.Color.green() if result.kills == result.pack else discord.Color.orange(),
         )
-        e.add_field(name="Log Link", value=tr(lang, "rpg.log_link_hint"), inline=False)
+        log_url = await _publish_combat_log(result.logs or [], lang=lang)
+        link_value = tr(lang, "rpg.log_link_hint")
+        if log_url:
+            link_value += f"\n{log_url}"
+        e.add_field(name="Log Link", value=link_value, inline=False)
         e.add_field(name="Battle Card", value=card, inline=False)
         if result.drops:
             e.add_field(name=tr(lang, "rpg.drops_field"), value=", ".join(f"{_item_label(k)} x{v}" for k, v in result.drops.items()), inline=False)
@@ -998,7 +1025,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             + f"{result.boss or 'Boss'}\n"
             + "\nRESULT\n"
             + f"{'WIN' if result.win else 'LOSE'} in {turns} turns\n"
-            + f"Reward +{result.gold}g  +{result.xp}xp\n"
+            + f"Reward +{result.gold} SC  +{result.xp}xp\n"
             + "```"
         )
 
@@ -1007,7 +1034,11 @@ def setup(bot: commands.Bot, guilds: list = None):
             color=discord.Color.orange() if result.win else discord.Color.dark_red(),
             description=("✅ Team thắng!" if result.win else "❌ Team thua trận boss.") if lang == "vi" else ("✅ Team victory!" if result.win else "❌ Team defeated by boss."),
         )
-        e.add_field(name="Log Link", value=tr(lang, "rpg.log_link_hint"), inline=False)
+        log_url = await _publish_combat_log(result.logs or [], lang=lang)
+        link_value = tr(lang, "rpg.log_link_hint")
+        if log_url:
+            link_value += f"\n{log_url}"
+        e.add_field(name="Log Link", value=link_value, inline=False)
         e.add_field(name="Battle Card", value=card, inline=False)
         if result.win:
             if result.drops:
@@ -1040,7 +1071,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             + f"Floors {result.total_floors} (boss at final floor)\n"
             + "\nRESULT\n"
             + f"{result.floors_cleared}/{result.total_floors} cleared {floor_bar}\n"
-            + f"Reward +{result.gold}g  +{result.xp}xp\n"
+            + f"Reward +{result.gold} SC  +{result.xp}xp\n"
             + "```"
         )
 
@@ -1049,7 +1080,11 @@ def setup(bot: commands.Bot, guilds: list = None):
             color=discord.Color.green() if result.cleared else discord.Color.dark_red(),
             description=(f"Tầng: **{result.floors_cleared}/{result.total_floors}**" if lang == "vi" else f"Floors: **{result.floors_cleared}/{result.total_floors}**"),
         )
-        e.add_field(name="Log Link", value=tr(lang, "rpg.log_link_hint"), inline=False)
+        log_url = await _publish_combat_log(result.logs or [], lang=lang)
+        link_value = tr(lang, "rpg.log_link_hint")
+        if log_url:
+            link_value += f"\n{log_url}"
+        e.add_field(name="Log Link", value=link_value, inline=False)
         e.add_field(name="Battle Card", value=card, inline=False)
         if result.drops:
             e.add_field(name=tr(lang, "rpg.drops_field"), value=", ".join(f"{_item_label(k)} x{v}" for k, v in result.drops.items()), inline=False)
@@ -1092,9 +1127,10 @@ def setup(bot: commands.Bot, guilds: list = None):
 
         e = discord.Embed(title="🤝 Party Hunt", color=discord.Color.gold())
         e.add_field(name="Party", value=", ".join(m.mention for m in clean_party), inline=False)
+        log_url = await _publish_combat_log(result.logs or [], lang=lang)
 
         summary_parts = [f"Hạ: **{result.kills}/{result.pack}**"]
-        summary_parts.append(f"+{result.gold} 💰")
+        summary_parts.append(f"+{result.gold} Slime Coin 💰")
         summary_parts.append(f"+{result.xp} ✨")
         e.add_field(name="Tổng", value=" • ".join(summary_parts), inline=False)
 
@@ -1114,6 +1150,8 @@ def setup(bot: commands.Bot, guilds: list = None):
         if drops:
             drop_parts = [f"{_item_label(k)} x{v}" for k, v in drops.items()]
             e.add_field(name=tr(lang, "rpg.drops_field"), value=", ".join(drop_parts), inline=False)
+        if log_url:
+            e.add_field(name=tr(lang, "rpg.log_url_field"), value=log_url, inline=False)
 
         logs = result.logs if isinstance(result.logs, list) else []
         combat_detail = "\n".join(logs[:15]) if logs else tr(lang, "rpg.no_combat_detail")
@@ -1241,7 +1279,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             
             level, xp, hp, max_hp, attack, defense, gold = map(int, player_row)
             if gold < cost:
-                msg = f"❌ Cần {cost} gold, bạn chỉ có {gold} gold." if lang == "vi" else f"❌ Need {cost} gold, you only have {gold}."
+                msg = f"❌ Cần {cost} Slime Coin, bạn chỉ có {gold} Slime Coin." if lang == "vi" else f"❌ Need {cost} Slime Coin, you only have {gold}."
                 return await interaction.response.send_message(msg, ephemeral=True)
             
             pity_count, _ = await get_gacha_pity(conn, interaction.guild.id, interaction.user.id)
@@ -1691,7 +1729,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             + f"TEAM HUNT | {ctx.author.display_name[:18]}\n"
             + "\n".join(team_lines or ["(no team data)"])
             + f"\nClear: {result.kills}/{result.pack} {progress_bar}\n"
-            + f"Reward: +{result.gold}g +{result.xp}xp\n"
+            + f"Reward: +{result.gold} SC +{result.xp}xp\n"
             + "```"
         )
         await ctx.reply(card)
@@ -1705,7 +1743,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         if not result.ok:
             return await ctx.reply(tr(lang, "rpg.boss_unavailable"))
         verdict = "WIN" if result.win else "LOSE"
-        await ctx.reply(f"👑 Boss `{result.boss}`: **{verdict}** | +{result.gold}g +{result.xp}xp")
+        await ctx.reply(f"👑 Boss `{result.boss}`: **{verdict}** | +{result.gold} SC +{result.xp}xp")
 
     @bot.command(name="d")
     async def text_dungeon(ctx: commands.Context):
@@ -1716,7 +1754,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         if not result.ok:
             return await ctx.reply(tr(lang, "rpg.dungeon_unavailable"))
         await ctx.reply(
-            f"🏰 Dungeon: **{result.floors_cleared}/{result.total_floors}** | +{result.gold}g +{result.xp}xp"
+            f"🏰 Dungeon: **{result.floors_cleared}/{result.total_floors}** | +{result.gold} SC +{result.xp}xp"
         )
 
     @bot.command(name="g")
@@ -1736,7 +1774,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             gold = int(player_row[6])
             total_cost = GACHA_COST * pulls
             if gold < total_cost:
-                msg = f"❌ Không đủ gold. Cần {total_cost}, bạn có {gold}." if lang == "vi" else f"❌ Not enough gold. Need {total_cost}, you have {gold}."
+                msg = f"❌ Không đủ Slime Coin. Cần {total_cost}, bạn có {gold}." if lang == "vi" else f"❌ Not enough Slime Coin. Need {total_cost}, you have {gold}."
                 return await ctx.reply(msg)
 
             await conn.execute(

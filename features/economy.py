@@ -25,9 +25,11 @@ BJ_VIEW_TIMEOUT = int(os.getenv("BJ_VIEW_TIMEOUT", "300"))
 
 BACK_EMOJI_NAME = os.getenv("BJ_BACK_EMOJI_NAME", "back")
 BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID", "745686280146387033"))
+CURRENCY_NAME = "Slime Coin"
+CURRENCY_ICON = "🪙"
 
 SHOP_ITEMS = {
-    "coffee": {"name": "Cà phê", "emoji": "☕", "price": 80, "desc": "Tăng tỉnh táo đi farm coin"},
+    "coffee": {"name": "Cà phê", "emoji": "☕", "price": 80, "desc": "Tăng tỉnh táo đi farm Slime Coin"},
     "lucky_charm": {"name": "Bùa may mắn", "emoji": "🍀", "price": 240, "desc": "Vật phẩm sưu tầm"},
     "energy_drink": {"name": "Nước tăng lực", "emoji": "⚡", "price": 150, "desc": "Nạp pin cho ngày mới"},
     "mystery_box": {"name": "Hộp bí ẩn", "emoji": "🎁", "price": 500, "desc": "Không biết mở ra gì"},
@@ -462,7 +464,7 @@ async def buy_item(user_id: int, item_key: str, quantity: int) -> tuple[bool, st
             if bal < total_price:
                 await conn.execute("ROLLBACK TO econ_buy")
                 await conn.execute("RELEASE econ_buy")
-                return False, "Không đủ coin để mua.", bal
+                return False, f"Không đủ {CURRENCY_NAME} để mua.", bal
 
             await conn.execute(
                 """
@@ -516,7 +518,7 @@ async def autocomplete_shop_item(_: discord.Interaction, current: str):
     q = current.lower().strip()
     out: list[app_commands.Choice[str]] = []
     for key, data in SHOP_ITEMS.items():
-        label = f"{data['emoji']} {data['name']} ({data['price']} 🪙)"
+        label = f"{data['emoji']} {data['name']} ({data['price']} {CURRENCY_ICON})"
         hay = f"{key} {data['name']}".lower()
         if q and q not in hay:
             continue
@@ -794,7 +796,7 @@ async def build_blackjack_embed(
     lines.append(f"**Nhà cái | {dealer_label}**")
     lines.append(hand_to_emojis(game.dealer_hand, hide_after_first=not reveal_dealer))
     lines.append("")
-    lines.append(f"**Tiền cược:** `{game.bet}` 🪙")
+    lines.append(f"**Tiền cược:** `{game.bet}` {CURRENCY_ICON} {CURRENCY_NAME}")
 
     if game.doubled:
         lines.append("**Gấp đôi:** `Có`")
@@ -806,40 +808,40 @@ async def build_blackjack_embed(
             net = game.payout - game.bet
             lines.append("")
             lines.append("### ✨ Xì dách!")
-            lines.append(f"Bạn thắng **{net}** 🪙")
-            lines.append(f"Số dư hiện tại: **{balance_now}** 🪙")
+            lines.append(f"Bạn thắng **{net}** {CURRENCY_ICON} {CURRENCY_NAME}")
+            lines.append(f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         elif game.result == "win":
             net = game.payout - game.bet
             lines.append("")
             lines.append("### 🎉 Bạn thắng")
-            lines.append(f"Bạn nhận được **{net}** 🪙")
-            lines.append(f"Số dư hiện tại: **{balance_now}** 🪙")
+            lines.append(f"Bạn nhận được **{net}** {CURRENCY_ICON} {CURRENCY_NAME}")
+            lines.append(f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         elif game.result == "push":
             lines.append("")
             lines.append("### 🤝 Hòa")
             lines.append("Hai bên hòa nhau, tiền cược đã được hoàn lại.")
-            lines.append(f"Số dư hiện tại: **{balance_now}** 🪙")
+            lines.append(f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         elif game.result == "timeout":
             lines.append("")
             lines.append("### ⏰ Hết thời gian")
             lines.append("Ván bài đã bị hủy do không có thao tác.")
-            lines.append(f"Tiền cược **{game.bet}** 🪙 đã được hoàn lại.")
-            lines.append(f"Số dư hiện tại: **{balance_now}** 🪙")
+            lines.append(f"Tiền cược **{game.bet}** {CURRENCY_ICON} {CURRENCY_NAME} đã được hoàn lại.")
+            lines.append(f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         elif game.result == "bust":
             lines.append("")
             lines.append("### 💥 Quắc")
-            lines.append(f"Bạn đã thua **{game.bet}** 🪙")
-            lines.append(f"Số dư hiện tại: **{balance_now}** 🪙")
+            lines.append(f"Bạn đã thua **{game.bet}** {CURRENCY_ICON} {CURRENCY_NAME}")
+            lines.append(f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         else:
             lines.append("")
             lines.append("### ❌ Bạn thua")
-            lines.append(f"Bạn đã thua **{game.bet}** 🪙")
-            lines.append(f"Số dư hiện tại: **{balance_now}** 🪙")
+            lines.append(f"Bạn đã thua **{game.bet}** {CURRENCY_ICON} {CURRENCY_NAME}")
+            lines.append(f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}")
     else:
         lines.append("")
         lines.append("### 🎮 Hành động")
@@ -990,7 +992,7 @@ async def setup_economy(bot: commands.Bot):
     async def balance(interaction: discord.Interaction):
         bal = await get_balance(interaction.user.id)
         await interaction.response.send_message(
-            f"💰 {interaction.user.mention} hiện có **{bal}** 🪙",
+            f"💰 {interaction.user.mention} hiện có **{bal}** {CURRENCY_ICON} {CURRENCY_NAME}",
             ephemeral=True,
         )
 
@@ -1004,11 +1006,11 @@ async def setup_economy(bot: commands.Bot):
             )
 
         await interaction.response.send_message(
-            f"🎁 {interaction.user.mention} nhận được **{DAILY_REWARD}** 🪙 từ daily.\n"
-            f"Bạn hiện có: **{balance_now}** 🪙"
+            f"🎁 {interaction.user.mention} nhận được **{DAILY_REWARD}** {CURRENCY_ICON} {CURRENCY_NAME} từ daily.\n"
+            f"Bạn hiện có: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
-    @economy_group.command(name="work", description="Đi làm để kiếm coin")
+    @economy_group.command(name="work", description="Đi làm để kiếm Slime Coin")
     async def work(interaction: discord.Interaction):
         ok, reward, balance_now, remain = await claim_work(interaction.user.id)
         if not ok:
@@ -1018,8 +1020,8 @@ async def setup_economy(bot: commands.Bot):
             )
 
         await interaction.response.send_message(
-            f"💼 {interaction.user.mention} đi làm nhận **{reward}** 🪙\n"
-            f"Số dư hiện tại: **{balance_now}** 🪙"
+            f"💼 {interaction.user.mention} đi làm nhận **{reward}** {CURRENCY_ICON} {CURRENCY_NAME}\n"
+            f"Số dư hiện tại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
     @economy_group.command(name="shop", description="Xem cửa hàng vật phẩm")
@@ -1028,6 +1030,7 @@ async def setup_economy(bot: commands.Bot):
         for key, data in SHOP_ITEMS.items():
             lines.append(
                 f"`{key}` • {data['emoji']} **{data['name']}** — **{data['price']}** 🪙\n{data['desc']}"
+                .replace("🪙", CURRENCY_ICON)
             )
 
         e = discord.Embed(
@@ -1049,8 +1052,8 @@ async def setup_economy(bot: commands.Bot):
         data = SHOP_ITEMS[item]
         total = int(data["price"]) * quantity
         await interaction.response.send_message(
-            f"✅ Đã mua {data['emoji']} **{data['name']}** x{quantity} với giá **{total}** 🪙\n"
-            f"Số dư còn lại: **{balance_now}** 🪙"
+            f"✅ Đã mua {data['emoji']} **{data['name']}** x{quantity} với giá **{total}** {CURRENCY_ICON} {CURRENCY_NAME}\n"
+            f"Số dư còn lại: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
     @economy_group.command(name="inventory", description="Xem kho đồ của bạn hoặc member")
@@ -1079,29 +1082,29 @@ async def setup_economy(bot: commands.Bot):
         )
         await interaction.response.send_message(embed=e)
 
-    @economy_group.command(name="give", description="Chuyển coin cho người khác")
-    @app_commands.describe(member="Người nhận", amount="Số coin muốn chuyển")
+    @economy_group.command(name="give", description="Chuyển Slime Coin cho người khác")
+    @app_commands.describe(member="Người nhận", amount="Số Slime Coin muốn chuyển")
     async def give(interaction: discord.Interaction, member: discord.Member, amount: int):
         if member.bot:
-            return await interaction.response.send_message("❌ Không thể chuyển coin cho bot.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Không thể chuyển {CURRENCY_NAME} cho bot.", ephemeral=True)
 
         if member.id == interaction.user.id:
-            return await interaction.response.send_message("❌ Không thể tự chuyển coin cho chính mình.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Không thể tự chuyển {CURRENCY_NAME} cho chính mình.", ephemeral=True)
 
         if amount <= 0:
-            return await interaction.response.send_message("❌ Số coin phải lớn hơn 0.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Số {CURRENCY_NAME} phải lớn hơn 0.", ephemeral=True)
 
         success = await transfer_balance(interaction.user.id, member.id, amount)
         if not success:
-            return await interaction.response.send_message("❌ Bạn không đủ coin.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Bạn không đủ {CURRENCY_NAME}.", ephemeral=True)
 
         sender_balance = await get_balance(interaction.user.id)
         await interaction.response.send_message(
-            f"💸 {interaction.user.mention} đã chuyển **{amount}** 🪙 cho {member.mention}.\n"
-            f"Số dư còn lại: **{sender_balance}** 🪙"
+            f"💸 {interaction.user.mention} đã chuyển **{amount}** {CURRENCY_ICON} {CURRENCY_NAME} cho {member.mention}.\n"
+            f"Số dư còn lại: **{sender_balance}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
-    @economy_group.command(name="leaderboard", description="Xem top coin toàn bộ bot")
+    @economy_group.command(name="leaderboard", description="Xem top Slime Coin toàn bộ bot")
     async def leaderboard(interaction: discord.Interaction):
         rows = await get_top_balances(limit=10)
         if not rows:
@@ -1111,30 +1114,30 @@ async def setup_economy(bot: commands.Bot):
         for idx, (user_id, balance_value) in enumerate(rows, start=1):
             user = bot.get_user(user_id)
             name = user.display_name if user else f"<@{user_id}>"
-            lines.append(f"**{idx}.** {name} — **{balance_value}** 🪙")
+            lines.append(f"**{idx}.** {name} — **{balance_value}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         embed = discord.Embed(
-            title="🏆 Global Coin Leaderboard",
+            title="🏆 Global Slime Coin Leaderboard",
             description="\n".join(lines),
             color=discord.Color.gold(),
         )
         await interaction.response.send_message(embed=embed)
 
-    @economy_group.command(name="blackjack", description="Chơi blackjack cược coin")
-    @app_commands.describe(bet="Số coin muốn cược")
+    @economy_group.command(name="blackjack", description="Chơi blackjack cược Slime Coin")
+    @app_commands.describe(bet="Số Slime Coin muốn cược")
     async def blackjack(interaction: discord.Interaction, bet: int):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
 
         if bet < BJ_MIN_BET:
             return await interaction.response.send_message(
-                f"❌ Cược tối thiểu là **{BJ_MIN_BET}** 🪙",
+                f"❌ Cược tối thiểu là **{BJ_MIN_BET}** {CURRENCY_ICON} {CURRENCY_NAME}",
                 ephemeral=True,
             )
 
         if bet > BJ_MAX_BET:
             return await interaction.response.send_message(
-                f"❌ Cược tối đa là **{BJ_MAX_BET}** 🪙",
+                f"❌ Cược tối đa là **{BJ_MAX_BET}** {CURRENCY_ICON} {CURRENCY_NAME}",
                 ephemeral=True,
             )
 
@@ -1156,7 +1159,7 @@ async def setup_economy(bot: commands.Bot):
         balance_now = await get_balance(interaction.user.id)
         if balance_now < bet:
             return await interaction.response.send_message(
-                f"❌ Bạn không đủ coin. Số dư hiện tại: **{balance_now}** 🪙",
+                f"❌ Bạn không đủ {CURRENCY_NAME}. Số dư hiện tại: **{balance_now}** {CURRENCY_ICON}",
                 ephemeral=True,
             )
 
@@ -1196,8 +1199,8 @@ async def setup_economy(bot: commands.Bot):
         game.message_id = msg.id
         ACTIVE_GAMES_BY_MESSAGE[msg.id] = game
 
-    @economy_group.command(name="addcoins", description="Thêm coin cho một người (chỉ chủ bot)")
-    @app_commands.describe(member="Người nhận", amount="Số coin muốn thêm")
+    @economy_group.command(name="addcoins", description="Thêm Slime Coin cho một người (chỉ chủ bot)")
+    @app_commands.describe(member="Người nhận", amount="Số Slime Coin muốn thêm")
     async def addcoins(interaction: discord.Interaction, member: discord.Member, amount: int):
         if interaction.user.id != BOT_OWNER_ID:
             return await interaction.response.send_message(
@@ -1206,17 +1209,17 @@ async def setup_economy(bot: commands.Bot):
             )
 
         if amount <= 0:
-            return await interaction.response.send_message("❌ Số coin phải lớn hơn 0.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Số {CURRENCY_NAME} phải lớn hơn 0.", ephemeral=True)
 
         if member.bot:
-            return await interaction.response.send_message("❌ Không thể thêm coin cho bot.", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Không thể thêm {CURRENCY_NAME} cho bot.", ephemeral=True)
 
         await add_balance(member.id, amount)
         balance_now = await get_balance(member.id)
 
         await interaction.response.send_message(
-            f"✅ Đã thêm **{amount}** 🪙 cho {member.mention}.\n"
-            f"Số dư hiện tại của {member.mention}: **{balance_now}** 🪙"
+            f"✅ Đã thêm **{amount}** {CURRENCY_ICON} {CURRENCY_NAME} cho {member.mention}.\n"
+            f"Số dư hiện tại của {member.mention}: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
     bot.tree.add_command(economy_group)

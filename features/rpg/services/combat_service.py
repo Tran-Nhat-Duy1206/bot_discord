@@ -53,6 +53,7 @@ class CombatResult:
     lifesteal_heal: int = 0
     damage_blocked: int = 0
     weekly_event: dict = field(default_factory=dict)
+    cooldown_remain: int = 0
 
 
 @dataclass
@@ -190,7 +191,7 @@ class CombatService(BaseService):
             from ..db.db import cooldown_remain
             remain = await cooldown_remain(conn, guild_id, user_id, "hunt")
             if remain > 0:
-                return CombatResult()
+                return CombatResult(cooldown_remain=max(1, int(remain)))
 
             team = await CombatService._load_team_members(conn, guild_id, user_id)
             if not team:
@@ -246,9 +247,9 @@ class CombatService(BaseService):
                 total_gold += g
                 total_xp += x
                 logs.append(
-                    f"{idx + 1}. Hạ {monster['name']} (+{g} gold, +{x} xp)"
+                    f"{idx + 1}. Hạ {monster['name']} (+{g} Slime Coin, +{x} xp)"
                     if _is_vi(lang)
-                    else f"{idx + 1}. Defeated {monster['name']} (+{g} gold, +{x} xp)"
+                    else f"{idx + 1}. Defeated {monster['name']} (+{g} Slime Coin, +{x} xp)"
                 )
 
                 rolled = roll_drops(monster, drop_mult=1.0 + len(team) * 0.04)
@@ -426,7 +427,7 @@ class CombatService(BaseService):
 
             total_gold += g
             total_xp += x
-            logs.append(f"{i+1}. Hạ {m['name']} (+{g} gold, +{x} xp, {battle.get('turns', 0)} turns)")
+            logs.append(f"{i+1}. Hạ {m['name']} (+{g} Slime Coin, +{x} xp, {battle.get('turns', 0)} turns)")
 
             if battle_logs:
                 logs.extend([f"  {line}" for line in battle_logs[:4]])
@@ -862,9 +863,9 @@ class CombatService(BaseService):
                 for item_id, amount in rolled.items():
                     drops[item_id] = drops.get(item_id, 0) + amount
                 logs.append(
-                    f"Tầng {floor}: hạ {enemy['name']} (+{g} gold, +{x} xp)"
+                    f"Tầng {floor}: hạ {enemy['name']} (+{g} Slime Coin, +{x} xp)"
                     if _is_vi(lang)
-                    else f"Floor {floor}: defeated {enemy['name']} (+{g} gold, +{x} xp)"
+                    else f"Floor {floor}: defeated {enemy['name']} (+{g} Slime Coin, +{x} xp)"
                 )
 
             if total_gold > 0:
@@ -1007,7 +1008,7 @@ class CombatService(BaseService):
         if drops:
             await batch_add_inventory(conn, guild_id, user_id, drops)
 
-            logs.append(f"Tầng {floor}: hạ {enemy_name} (+{g} gold, +{x} xp)")
+            logs.append(f"Tầng {floor}: hạ {enemy_name} (+{g} Slime Coin, +{x} xp)")
 
         base_hp_after = max(1, min(max_hp, player_hp - bonus_hp_total))
         await player_repo.update_player_hp_gold(conn, guild_id, user_id, base_hp_after, total_gold)
@@ -1149,9 +1150,9 @@ class CombatService(BaseService):
                 for item_id, amount in rolled.items():
                     drops[item_id] = drops.get(item_id, 0) + amount
                 logs.append(
-                    f"{i+1}. Team hạ {monster['name']} (+{g} gold, +{x} xp)"
+                    f"{i+1}. Team hạ {monster['name']} (+{g} Slime Coin, +{x} xp)"
                     if _is_vi(lang)
-                    else f"{i+1}. Team defeated {monster['name']} (+{g} gold, +{x} xp)"
+                    else f"{i+1}. Team defeated {monster['name']} (+{g} Slime Coin, +{x} xp)"
                 )
             else:
                 logs.append(

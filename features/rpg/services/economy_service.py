@@ -83,9 +83,9 @@ class EconomyService(BaseService):
                 new_balance=new_balance,
                 reward_gold=reward,
                 message=(
-                    f"🎁 Nhận **{reward}** gold. Số dư: **{new_balance}**"
+                    f"🎁 Nhận **{reward}** Slime Coin. Số dư: **{new_balance}**"
                     if _is_vi(lang)
-                    else f"🎁 Claimed **{reward}** gold. Balance: **{new_balance}**"
+                    else f"🎁 Claimed **{reward}** Slime Coin. Balance: **{new_balance}**"
                 ),
             )
 
@@ -101,15 +101,15 @@ class EconomyService(BaseService):
             total = int(data["buy"]) * amount
             ok = await player_repo.subtract_gold(conn, guild_id, user_id, total)
             if not ok:
-                return False, ("Không đủ vàng." if _is_vi(lang) else "Not enough gold.")
+                return False, ("Không đủ Slime Coin." if _is_vi(lang) else "Not enough Slime Coin.")
 
             await inventory_repo.add_inventory(conn, guild_id, user_id, item_id, amount)
             await telemetry_repo.record_gold_flow(conn, guild_id, user_id, -total, "shop_buy")
             await conn.commit()
 
             if _is_vi(lang):
-                return True, f"✅ Đã mua {data['emoji']} **{data['name']}** x{amount} với giá **{total}** gold."
-            return True, f"✅ Purchased {data['emoji']} **{data['name']}** x{amount} for **{total}** gold."
+                return True, f"✅ Đã mua {data['emoji']} **{data['name']}** x{amount} với giá **{total}** Slime Coin."
+            return True, f"✅ Purchased {data['emoji']} **{data['name']}** x{amount} for **{total}** Slime Coin."
 
     @staticmethod
     async def sell_item(guild_id: int, user_id: int, item_id: str, amount: int = 1, black_market: bool = False, lang: str = "en") -> tuple[bool, str, int]:
@@ -139,9 +139,9 @@ class EconomyService(BaseService):
 
             if _is_vi(lang):
                 location_label = "🌑 chợ đen" if black_market else "shop"
-                return True, f"💰 Đã bán **{data['name']}** x{amount}, nhận **{total}** gold ({location_label}).", total
+                return True, f"💰 Đã bán **{data['name']}** x{amount}, nhận **{total}** Slime Coin ({location_label}).", total
             location_label = "🌑 black market" if black_market else "shop"
-            return True, f"💰 Sold **{data['name']}** x{amount}, received **{total}** gold ({location_label}).", total
+            return True, f"💰 Sold **{data['name']}** x{amount}, received **{total}** Slime Coin ({location_label}).", total
 
     @staticmethod
     async def craft_item(guild_id: int, user_id: int, recipe_id: str, amount: int = 1, lang: str = "en") -> CraftResult:
@@ -162,7 +162,7 @@ class EconomyService(BaseService):
 
             ok = await player_repo.subtract_gold(conn, guild_id, user_id, cost_gold)
             if not ok:
-                return CraftResult(ok=False, message=("Không đủ gold để craft." if _is_vi(lang) else "Not enough gold to craft."))
+                return CraftResult(ok=False, message=("Không đủ Slime Coin để craft." if _is_vi(lang) else "Not enough Slime Coin to craft."))
 
             consumed: list[tuple[str, int]] = []
             for item_id, req in requires.items():
@@ -244,7 +244,7 @@ class EconomyService(BaseService):
 
             await conn.commit()
 
-            msg = f"🎁 Mở lootbox x{amount}: +{total_gold} gold" if _is_vi(lang) else f"🎁 Opened lootbox x{amount}: +{total_gold} gold"
+            msg = f"🎁 Mở lootbox x{amount}: +{total_gold} Slime Coin" if _is_vi(lang) else f"🎁 Opened lootbox x{amount}: +{total_gold} Slime Coin"
             if bonus_items:
                 msg += "\n" + "\n".join(f"- {x}" for x in bonus_items)
             msg += (
@@ -294,7 +294,7 @@ class EconomyService(BaseService):
 
             ok = await player_repo.subtract_gold(conn, guild_id, sender_id, amount)
             if not ok:
-                return TransferResult(ok=False, message=("Bạn không đủ vàng." if _is_vi(lang) else "You don't have enough gold."))
+                return TransferResult(ok=False, message=("Bạn không đủ Slime Coin." if _is_vi(lang) else "You don't have enough Slime Coin."))
 
             await player_repo.add_gold(conn, guild_id, receiver_id, amount)
             await telemetry_repo.record_gold_flow(conn, guild_id, sender_id, -amount, "pay_sent")
@@ -304,7 +304,7 @@ class EconomyService(BaseService):
             return TransferResult(
                 ok=True,
                 amount=amount,
-                message=(f"💸 Đã chuyển **{amount}** gold." if _is_vi(lang) else f"💸 Transferred **{amount}** gold."),
+                message=(f"💸 Đã chuyển **{amount}** Slime Coin." if _is_vi(lang) else f"💸 Transferred **{amount}** Slime Coin."),
             )
 
     @staticmethod
