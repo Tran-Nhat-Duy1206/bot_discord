@@ -1,421 +1,310 @@
-# Discord Bot TODO
-
-## Ưu tiên cao
-
-### Moderation
-
-* [x] ban command
-* [x] kick command
-* [x] mute / timeout / untimeout
-* [x] clear messages
-* [x] warn system (persistent + history)
-* [x] auto role
-* [x] moderation log channel
+# 🚀 Discord Bot TODO (TEAM RPG VERSION)
 
 ---
 
-### Leveling
+# ✅ ĐÃ HOÀN THÀNH (TỪ VERSION TRƯỚC)
+
+## 🎮 Core RPG
+
+* [x] Player system (level, xp, hp, atk, def, gold)
+* [x] `/hunt` - combat với monster
+* [x] `/boss` - boss battle với cooldown
+* [x] `/daily` - daily reward
+* [x] `/work` - earn gold
+* [x] `/shop` - mua item
+* [x] `/inventory` - xem items
+* [x] `/balance` - xem gold
+* [x] `/transfer` - chuyển gold
+* [x] Equipment system (weapon, armor, accessory)
+* [x] Lootbox system (`/open`, daily limit)
+* [x] Quest system (daily/weekly, prereq)
+* [x] Crafting system (`/craft_list`, `/craft`)
+* [x] Passive effects cho equipment
+* [x] Set bonus
+* [x] Boss variants theo level
+* [x] Dungeon mode
+* [x] Party/co-op hunt
+* [x] PvE event (double drop)
+* [x] Season system + soft reset
+* [x] Telemetry (win/lose, damage, gold, xp)
+
+## 💰 Economy & Safety
+
+* [x] User lock (per-user locking)
+* [x] Transaction wrapper
+* [x] Anti double-spend
+* [x] Anti-abuse (rate limit, trade exploit)
+* [x] Gold ledger / audit log
+* [x] Transfer limit (daily, pair limit)
+* [x] Telemetry combat
+
+## 🎵 Music Bot
+
+* [x] Lavalink integration (wavelink)
+* [x] Multi-node + failover
+* [x] Spotify support
+* [x] Queue management + pagination
+* [x] Autoplay YouTube
+* [x] DJ role permission
+* [x] Lyrics command
+
+## ⚙️ Moderation
+
+* [x] ban/kick command
+* [x] mute/timeout
+* [x] clear messages
+* [x] warn system (persistent)
+* [x] auto role
+* [x] log channel
+
+## 📈 Leveling
 
 * [x] XP khi chat
-* [x] level up message
 * [x] /rank command
 * [x] leaderboard
-* [x] lưu database
-* [x] anti-spam cooldown cho XP
-* [x] admin config XP (multiplier, cooldown, channel ignore)
+* [x] admin config (multiplier, cooldown, ignore channel)
+
+## 🎉 Fun & Utility
+
+* [x] meme, coinflip, dice, 8ball, trivia
+* [x] ping, avatar, userinfo, serverinfo, remind
 
 ---
 
-## Ưu tiên trung bình
+# ❌ ĐÃ BỎ (KHÔNG LÀM)
 
-### Economy mở rộng
-
-* [x] daily reward
-* [x] work command
-* [x] shop
-* [x] inventory
-* [x] transfer money
-* [x] balance command
-
----
-
-### Music Bot
-
-* [x] join voice
-* [x] /play
-* [x] /playnext
-* [x] /skip
-* [x] /queue
-* [x] /shuffle
-* [x] /pause
-* [x] /resume
-* [x] /stop
-* [x] /leave
-* [x] /loop
-* [x] auto disconnect
-* [x] embed response full cho toàn bộ music command
-* [x] Spotify track support
-* [x] Spotify playlist/album support (batch queue)
-* [x] Fast-start playlist: phát bài đầu trước, nạp phần còn lại nền
-* [x] Spotify API fallback để tránh DRM extractor path
-* [x] Giảm spam warning yt-dlp trong log
-* [x] lyrics command
-* [x] volume control
-* [x] queue pagination (nhiều hơn 10 bài)
-* [x] Queue pagination bằng button (prev/next)
-* [x] DJ role permission
-
-### Music Scale-up (kế hoạch)
-
-* [x] Migrate audio engine sang Lavalink (bỏ local ffmpeg path)
-* [x] Dùng `wavelink` làm client Lavalink cho discord.py
-* [x] Thiết kế multi-node Lavalink + failover strategy
-* [x] Redis cache cho track resolve (yt/spotify)
-* [x] Redis cache cho Spotify playlist mapping + TTL
-* [x] Cache invalidation policy + cache warmup cho playlist hot
-* [x] Persist queue state theo guild (Redis) để recover khi restart
-* [x] Metrics: queue wait time, resolve latency, node health
-* [x] Healthcheck + auto-reconnect Lavalink node
-* [x] Rate-limit layer cho music commands (guild/user)
-* [x] Autoplay YouTube related khi queue rỗng
-* [x] Toggle autoplay theo guild config
-
----
-
-## Ưu tiên thấp
-
-### Fun Commands
-
-* [x] meme
-* [x] coinflip
-* [x] dice
-* [x] 8ball
-* [x] trivia
-
----
-
-### Utility
-
-* [x] ping
-* [x] avatar
-* [x] userinfo
-* [x] serverinfo
-* [x] remind
-
-## RPG phase 2
-
-* [x] Tách thêm `battle.py`, `loot.py` khỏi `commands.py`
-* [x] Quest reset theo ngày/tuần + quest mới
-* [x] Equipment slots: weapon/armor/accessory
-* [x] Boss command + cooldown riêng
-* [x] Cân bằng lại tỉ lệ drop và công thức damage
-* [x] Asset hook (`assets.py`) + fallback text khi chưa có ảnh
-* [x] Combat log web (best effort publish link)
-
-## RPG phase 3
-
-* [x] Loot rarity table + command `/rpg_loot`
-* [x] Slime jackpot tracking + command `/rpg_jackpot`
-* [x] Hunt reward tuning (drop/rate/damage) bằng env config
-* [x] Boss combat log publish + fallback embed
-
-## RPG phase 4
-
-* [x] Lootbox command `/open` + daily open limit
-* [x] Quest chain cơ bản với `prereq_quest_id`
-* [x] Quest objective mới: `open_lootboxes`, `boss_wins`
-* [x] Item rarity cải tiến + hiển thị loot detail trong hunt
-
-## RPG phase 5
-
-* [x] Asset local file mode từ folder `assets/rpg` + attach embed file
-* [x] Boss variants theo level bracket
-* [x] Crafting system: `/craft_list`, `/craft`
-* [x] Epic/Legendary craftable equipment items
-
-## RPG phase 6 (đề xuất)
-
-* [x] Passive effects cho equipment (lifesteal, crit bonus, damage reduction)
-* [x] Set bonus khi mặc đúng combo item
-* [x] Skill system cơ bản (active/passive) cho player
-* [x] Boss mechanics theo phase (rage mode, shield turn, summon)
-* [x] Dungeon mode nhiều tầng với reward scaling
-* [x] Party/co-op hunt (2-4 người)
-* [x] PvE event theo tuần (double drop, boss rush)
-
-## RPG chất lượng & cân bằng
-
-* [x] Telemetry combat: lưu tỉ lệ win/lose theo level bracket
-* [x] Dashboard cân bằng: damage trung bình, TTK, drop rate thực tế
-* [x] Anti-abuse: rate limit command RPG theo user/guild
-* [x] Anti-alt exploit cho trade/pay trong RPG
-* [x] Rà soát economy inflation (nguồn gold vs sink gold)
-* [x] Soft reset theo season + phần thưởng season
-
-# 🚀 Discord Bot TODO (Refactored - Production Focus)
+* [x] Web dashboard
+* [x] Plugin system
+* [x] Active skill spam (giữ passive thay active)
+* [x] Element system (fire/water/light)
+* [x] 5+ team slots
+* [x] Guild/clan system
+* [x] World map/region
 
 ---
 
 # 🎯 Mục tiêu chính
 
-* Xây bot RPG có thể scale 100–500 user
-* Giữ user lâu (retention)
-* Kiếm tiền (monetization)
-* Code maintainable + ít bug
+* RPG chuyển sang **Team-based + Character system**
+* Tăng retention bằng gacha + collection
+* Không phá balance hiện tại
+* Vẫn lightweight cho Discord UX
 
 ---
 
-# 🥇 PHASE 1 — STABILITY & SCALE (BẮT BUỘC)
+# 🥇 PHASE 1 — CORE REFACTOR (BẮT BUỘC)
 
-## 🔒 Concurrency & Data Safety (CRITICAL)
+## 🔁 Character System (CRITICAL)
 
-* [x] User lock theo `user_id`
-* [x] Transaction wrapper chung cho DB (BEGIN / COMMIT / ROLLBACK)
-* [x] Đảm bảo mọi command RPG chạy trong transaction
-* [x] Anti double-spend (gold, item, reward)
-
----
-
-## ⚙️ Architecture (CLEAN CODE)
-
-* [x] Tách Service Layer:
-
-  * `combat_service.py`
-  * `economy_service.py`
-  * `quest_service.py`
-  * `player_service.py`
-* [x] Không để logic trong command
-* [x] Chuẩn hóa flow: load → process → save
-* [x] Repository Layer cho DB access
-* [x] Concurrent user lock (per-user locking)
-* [x] Transaction wrapper với user-level locks
-* [x] Tổ chức folder rõ ràng:
-  * `combat/` - battle, loot, equipment, skills
-  * `data/` - game configuration
-  * `db/` - database layer
-  * `models/` - data classes
-  * `repositories/` - DB access
-  * `services/` - business logic
-  * `utils/` - helpers
+* [x] Thêm **Main Character**
+  * chọn giới tính (male/female)
+  * stat base giống player hiện tại
+* [x] Thêm bảng `characters`
+* [x] Thêm bảng `player_characters`
+* [x] Mỗi player có:
+  * main_character (bắt buộc)
+  * danh sách heroes
 
 ---
 
-## ⚡ Performance
+## 🎭 Role System (BẮT BUỘC)
 
-* [ ] Cache player (RAM cache)
-* [ ] Cache inventory
-* [ ] Giảm số lần query DB trong 1 command
-* [ ] Batch DB write (ghi 1 lần thay vì nhiều lần)
-
----
-
-## 🧾 Logging & Debug
-
-* [ ] Structured logging (JSON log)
-* [ ] Log command usage
-* [ ] Log error rõ ràng
+* [x] Define role:
+  * DPS
+  * Tank
+  * Healer
+  * Support
+* [x] Mỗi character có:
+  * role
+  * base stats riêng
+* [x] Không tạo character "mạnh hơn", chỉ khác role
 
 ---
 
----
+## 🎲 Gacha System (CORE LOOP)
 
-# 🥈 PHASE 2 — GAMEPLAY & RETENTION
-
-## 🔁 Core Gameplay Loop
-
-* [ ] Daily reward
-* [ ] Daily streak system
-* [ ] Hunt → mạnh → boss → loot → repeat
-* [ ] Cooldown system chuẩn
-
----
-
-## 🎮 Content giữ user
-
-* [ ] Boss rotation theo giờ
-* [ ] Dungeon scaling
-* [ ] Quest daily / weekly
-* [ ] Event system:
-
-  * double drop
-  * boss rush
+* [x] Command `/gacha`
+* [x] Drop rate:
+  * Common / Rare / Epic / Legendary
+* [x] Thêm pity system (soft pity)
+* [x] Anti-duplicate:
+  * convert duplicate → shard / gold
+* [ ] Animation text đơn giản (Discord friendly)
 
 ---
 
-## 🏆 Progression
+## 🧱 Team System
 
-* [ ] Balance lại damage / drop rate
-* [ ] Improve loot rarity system
-* [ ] Leaderboard meaningful
-
----
-
----
-
-# 🥉 PHASE 3 — MONETIZATION (KIẾM TIỀN)
-
-## 💎 Premium Currency
-
-* [ ] Thêm `gem` vào player
-* [ ] Shop mua gem (manual hoặc tích hợp payment sau)
-* [ ] Dùng gem để:
-
-  * mở boss đặc biệt
-  * reset cooldown
-  * mua lootbox premium
+* [x] Command `/team`
+* [x] Team size: **5 characters**
+  * Main (fixed)
+  * +4 heroes
+* [x] Validate team trước combat
+* [x] Lưu team vào DB
 
 ---
 
-## 👑 VIP System
+## ⚔️ Combat Refactor (QUAN TRỌNG NHẤT)
 
-* [ ] Thêm `vip_expire`
-* [ ] Buff nhẹ:
-
-  * +XP
-  * +gold
-  * giảm cooldown
-* [ ] Không pay-to-win
+* [x] Convert:
+  * Player → Team
+* [x] Combat flow mới:
+  * apply passive
+  * team attack
+  * monster attack
+* [x] Không dùng active skill spam (Discord UX kém)
+* [x] Damage = tổng contribution của team
 
 ---
 
-## 🎟️ Battle Pass
+## ⚖️ Balance Layer
 
-* [ ] Mission system
-* [ ] Tier reward (free + premium)
-* [ ] Reset theo season
+* [x] Team power system:
+```python
+team_power = sum(char.atk + char.def + char.hp * 0.2)
+```
+* [x] Monster scale theo team power
+* [x] Không scale theo số lượng character
+
+---
+
+# 🥈 PHASE 2 — GAMEPLAY DEPTH
+
+## 🧠 Passive Skill System
+
+* [ ] Mỗi character có 1–2 passive
+* [ ] Ví dụ:
+  * DPS → +crit
+  * Tank → giảm damage team
+  * Healer → heal mỗi turn
+* [ ] Stack có giới hạn
+
+---
+
+## 🔗 Team Synergy
+
+* [ ] Bonus khi mix role:
+  * Tank + Healer → +def
+  * DPS + Support → +damage
+* [ ] Không làm quá phức tạp
+
+---
+
+## 🧬 Character Progression
+
+* [ ] Level riêng cho character
+* [ ] EXP chia từ combat
+* [ ] Ascend (optional, phase sau)
+
+---
+
+# 🥉 PHASE 3 — GACHA EXPANSION
+
+## 🎟️ Banner System
+
+* [ ] Rate-up character
+* [ ] Rotation theo tuần
+* [ ] Limited character (optional)
+
+---
+
+## 💠 Currency
+
+* [ ] Thêm `gem`
+* [ ] Gacha dùng gem
+* [ ] Earn free gem (daily / quest)
+
+---
+
+## 🔁 Duplicate Handling
+
+* [ ] Convert → shard
+* [ ] Shard dùng để:
+  * nâng cấp character
+  * unlock passive
+
+---
+
+# 🏅 PHASE 4 — INTEGRATION
+
+## ⚔️ Dungeon
+
+* [ ] Team-based dungeon
+* [ ] Synergy quan trọng hơn stat
+
+---
+
+## 👥 Party
+
+* [ ] Party = nhiều team
+* [ ] Scale monster theo số người
+
+---
+
+## 🧾 Quest
+
+* [ ] Quest liên quan character:
+  * summon X lần
+  * dùng healer X trận
+
+---
+
+# 🏆 PHASE 5 — RETENTION
+
+## 🎯 Collection System
+
+* [ ] Character index
+* [ ] % completion
 
 ---
 
 ## 🎨 Cosmetic
 
-* [ ] Title
-* [ ] Skin weapon
-* [ ] Effect combat
+* [ ] Skin character
+* [ ] Title riêng theo character
 
 ---
 
----
+## 🏅 Leaderboard
 
-# 🏅 PHASE 4 — SCALE & OPTIMIZATION
-
-## 📊 Observability
-
-* [ ] Track command execution time
-* [ ] Metrics:
-
-  * số user active
-  * tỉ lệ win/lose
-* [ ] Error tracking (Sentry hoặc custom)
+* [ ] Top team power
+* [ ] Top collection
 
 ---
 
-## 🧾 Economy Safety
+# ❄️ KHÔNG LÀM NGAY (TRÁNH OVERDESIGN)
 
-* [ ] Audit log:
-
-  * gold flow
-  * item change
-* [ ] Detect abuse:
-
-  * spam command
-  * trade exploit
+* [ ] PvP real-time
+* [ ] Skill tree phức tạp
+* [ ] Element system (fire/water/light)
 
 ---
 
-## ⚙️ DB Optimization
+# 🧠 DESIGN RULES
 
-* [ ] Index tối ưu query
-* [ ] Data consistency check
-* [ ] Cleanup data định kỳ
-
----
-
----
-
-# 🧱 PHASE 5 — DATA & ADMIN
-
-* [ ] DB schema versioning
-* [ ] Migration script
-* [ ] Backup / restore
-* [ ] Admin command:
-
-  * sửa stats
-  * rollback player
-* [ ] Grant/revoke item (có audit log)
+* Character ≠ mạnh hơn → chỉ khác role
+* Team size nhỏ (max 5)
+* Passive > Active
+* Gacha không pay-to-win
+* Discord UX phải đơn giản
 
 ---
 
----
+# 🔥 PRIORITY (RẤT QUAN TRỌNG)
 
-# 🚀 PHASE 6 — ADVANCED RPG (OPTIONAL)
-
-* [ ] Status effect (poison, burn, stun)
-* [ ] Turn order (speed stat)
-* [ ] Damage type (physical/magic)
-* [ ] Enemy AI pattern
-* [ ] World map / region
-* [ ] Guild / clan system
+1. Character system
+2. Team system
+3. Combat refactor
+4. Gacha
+5. Passive skill
 
 ---
 
----
+# 💬 NOTE
 
-# ❄️ TẠM HOÃN (KHÔNG LÀM NGAY)
-
-## ⛔ Không ưu tiên lúc này
-
-* [ ] Web dashboard
-* [ ] Plugin system
-* [ ] Multi-node phức tạp (trừ khi >1000 user)
-* [ ] Load test nặng
-* [ ] Full CI/CD pipeline
-* [ ] Music scale-up thêm (đã đủ rồi)
+* Đây là bước chuyển từ:
+  * Solo RPG → Team RPG
+* Không rewrite toàn bộ → chỉ thêm layer
+* Giữ hệ thống cũ (equipment, gold, combat)
 
 ---
-
----
-
-# 🧪 TESTING (LÀM SAU KHI ỔN ĐỊNH)
-
-* [ ] Unit test cho service layer
-* [ ] Integration test DB
-* [ ] Mock Discord API
-* [ ] Spam test command (simulate user)
-
----
-
----
-
-# 🛠️ DEVOPS (TỐI THIỂU)
-
-* [ ] Auto restart bot khi crash
-* [ ] Healthcheck command
-* [ ] Env config dev/prod
-
----
-
----
-
-# 🎯 NGUYÊN TẮC PHÁT TRIỂN
-
-* Không thêm feature khi chưa ổn định
-* Mỗi command = 1 flow rõ ràng
-* Load 1 lần → xử lý → save 1 lần
-* Ưu tiên:
-
-  1. Không bug
-  2. Không lag
-  3. User quay lại
-
----
-
----
-
-# 💬 Ghi chú
-
-* RPG là core product
-* Các module khác (music, fun, moderation) chỉ là phụ
-* Focus giữ user + kiếm tiền, không phải thêm feature
-
----
-

@@ -35,7 +35,7 @@ fh = RotatingFileHandler("logs/bot.log", maxBytes=2_000_000, backupCount=3, enco
 fh.setFormatter(fmt)
 logger.addHandler(fh)
 
-bot = commands.Bot(command_prefix="-", intents=intents, help_command=None)
+bot = commands.Bot(command_prefix=commands.when_mentioned_or("-", "s!"), intents=intents, help_command=None)
 _START_TS = time.time()
 
 try:
@@ -62,7 +62,7 @@ fun.setup(bot, GUILDS)
 
 @bot.event
 async def on_ready():
-    await bot.change_presence(activity=discord.Game(name="Nô lệ của mọi nhà"))
+    await bot.change_presence(activity=discord.Game(name="/help_rpg | /help"))
     try:
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} app commands.")
@@ -221,24 +221,18 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(
         name="🐉 RPG",
         value=(
-            "`/rpg_start` tạo nhân vật\n"
-            "`/profile` `/stats` xem chỉ số\n"
-            "`/hunt` `/boss` chiến đấu\n"
-            "`/dungeon` dungeon nhiều tầng\n"
-            "`/party_hunt` co-op hunt\n"
-            "`/rpg_event` weekly event\n"
-            "`/quest` `/quest_claim` quest\n"
-            "`/rpg_shop` `/rpg_buy` `/rpg_sell` shop\n"
-            "`/craft_list` `/craft` crafting\n"
-            "`/rpg_loot` `/rpg_jackpot` loot & jackpot\n"
-            "`/rpg_balance_dashboard` dashboard cân bằng\n"
-            "`/rpg_economy_audit` audit gold source/sink (admin)\n"
-            "`/rpg_season_status` `/rpg_season_rollover` season\n"
-            "`/rpg_inventory` `/rpg_use` `/rpg_drop` `/open` túi đồ\n"
+            "`/rpg_start` tạo hồ sơ chỉ huy RPG\n"
+            "`/create_character` tạo Captain đội hình\n"
+            "`/gacha` `/my_characters` `/roster` `/team` build đội hình\n"
+            "`/team_stats` xem chỉ số tổng team\n"
+            "`/ascend_mythic` ghép mythic từ mảnh legendary\n"
+            "`/hunt` `/boss` `/dungeon` `/party_hunt` chiến đấu\n"
+            "`/quest` `/quest_claim` nhiệm vụ\n"
+            "`/rpg_shop` `/shop` `/rpg_buy` `/rpg_sell` shop\n"
+            "`/rpg_inventory` `/open` `/rpg_use` `/rpg_drop` túi đồ\n"
             "`/equip` `/unequip` `/rpg_equipment` trang bị\n"
-            "`/rpg_skills` `/rpg_skill_unlock` `/rpg_skill_use` skill\n"
-            "`/rpg_daily` `/rpg_balance` `/rpg_pay` tiền\n"
-            "`/rpg_leaderboard` bảng xếp hạng"
+            "`/rpg_daily` `/rpg_balance` `/rpg_pay` kinh tế\n"
+            "`/help_rpg` xem hướng dẫn RPG chi tiết"
         ),
         inline=False,
     )
@@ -299,6 +293,70 @@ async def help_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=e, ephemeral=True)
 
 
+@bot.tree.command(name="help_rpg", description="Hướng dẫn RPG chi tiết")
+async def help_rpg_cmd(interaction: discord.Interaction):
+    e = discord.Embed(
+        title="🐉 RPG Help (Team-Based)",
+        description="Flow đề xuất: `/rpg_start` -> `/create_character` -> `/gacha` -> `/team` -> `/hunt`",
+        color=discord.Color.orange(),
+    )
+    e.add_field(
+        name="🚀 Bắt đầu",
+        value=(
+            "`/rpg_start` tạo profile\n"
+            "`/create_character <role>` tạo Captain (`dps|tank|healer|support|sp`)\n"
+            "`/profile` `/stats` xem chỉ số"
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="🎭 Character & Team",
+        value=(
+            "`/gacha [1-10] [banner]` quay hero (rate-up legendary)\n"
+            "`/my_characters` xem danh sách hero\n"
+            "`/roster` xem roster theo rarity\n"
+            "`/team view` xem đội hình\n"
+            "`/team add <character_id> <slot 1-4>` thêm hero\n"
+            "`/team reset` reset hero slots\n"
+            "`/team_stats` xem tổng lực đội hình\n"
+            "`/ascend_mythic <legendary_id>` ghép lên mythic"
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="⚔️ Combat",
+        value=(
+            "`/hunt` team hunt thường\n"
+            "`/boss` boss fight\n"
+            "`/dungeon` nhiều tầng\n"
+            "`/party_hunt` co-op 2-4 người"
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="🧰 Tiến trình",
+        value=(
+            "`/quest` `/quest_claim` nhiệm vụ\n"
+            "`/rpg_inventory` xem kho đồ\n"
+            "`/open` mở lootbox\n"
+            "`/equip` `/unequip` `/rpg_equipment` trang bị\n"
+            "`/rpg_skills` `/rpg_skill_unlock` `/rpg_skill_use` skill"
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="💰 Kinh tế",
+        value=(
+            "`/rpg_daily` nhận thưởng ngày\n"
+            "`/rpg_balance` xem vàng\n"
+            "`/rpg_pay` chuyển vàng\n"
+            "`/rpg_shop` `/shop` `/rpg_buy` `/rpg_sell` `/craft_list` `/craft`"
+        ),
+        inline=False,
+    )
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
     logger.exception("app command error: %r", error)
@@ -320,10 +378,20 @@ async def main():
         raise RuntimeError("Missing DISCORD_TOKEN")
 
     await economy.setup_economy(bot)
+    
+    from features.rpg.cache import PLAYER_CACHE, INVENTORY_CACHE, EQUIPPED_CACHE, SKILLS_CACHE
+    await PLAYER_CACHE.start()
+    await INVENTORY_CACHE.start()
+    await EQUIPPED_CACHE.start()
+    await SKILLS_CACHE.start()
+    
     try:
         await bot.start(TOKEN)
     finally:
-        pass
+        await PLAYER_CACHE.stop()
+        await INVENTORY_CACHE.stop()
+        await EQUIPPED_CACHE.stop()
+        await SKILLS_CACHE.stop()
 
 
 if __name__ == "__main__":

@@ -2,15 +2,20 @@ import random
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..data.data import (
+from ..data import (
     ITEMS, MONSTERS, BOSS_VARIANTS,
-    pick_monster, roll_damage,
+    pick_monster,
     RPG_SLIME_BONUS_GOLD, RPG_SLIME_BONUS_XP,
     RPG_SLIME_JACKPOT_CHANCE, RPG_SLIME_JACKPOT_MIN, RPG_SLIME_JACKPOT_MAX,
+    RPG_DEATH_HP_PERCENT, RPG_DAMAGE_REDUCTION_CAP, RPG_LIFESTEAL_HEAL_CAP,
+    RPG_HUNT_COOLDOWN, RPG_BOSS_COOLDOWN, RPG_DUNGEON_COOLDOWN,
 )
 from ..combat.battle import run_battle_turns
+from ..combat.battle import run_team_battle
 from ..combat.loot import roll_gold_xp, roll_drops
 from ..utils.events import current_weekly_event
+from ..utils.batch_ops import batch_record_monster_kills, batch_add_inventory, batch_add_quest_progress
+from ..db.db import get_main_character, get_team, calculate_team_power
 
 from ..repositories import player_repo, inventory_repo, telemetry_repo, quest_repo
 from .base import BaseService
@@ -113,6 +118,65 @@ class PartyHuntResult:
 
 class CombatService(BaseService):
     @staticmethod
+    async def _load_team_members(conn, guild_id: int, user_id: int) -> list[dict]:
+        main = await get_main_character(conn, guild_id, user_id)
+        if not main:
+            return []
+
+        members: list[dict] = [
+            {
+                "character_id": str(main[1]),
+                "name": str(main[7]),
+                "role": str(main[9]),
+                "hp": int(main[10]),
+                "attack": int(main[11]),
+                "defense": int(main[12]),
+                "speed": int(main[13]),
+                "level": int(main[3]),
+                "star": int(main[5]),
+                "passive_skill": str(main[14] or ""),
+            }
+        ]
+
+        team_rows = await get_team(conn, guild_id, user_id)
+        used = {str(main[1])}
+        for row in team_rows:
+            cid = str(row[1])
+            if cid in used:
+                continue
+            members.append(
+                {
+                    "character_id": cid,
+                    "name": str(row[2]),
+                    "role": str(row[4]),
+                    "hp": int(row[5]),
+                    "attack": int(row[6]),
+                    "defense": int(row[7]),
+                    "speed": int(row[8]),
+                    "level": int(row[10]),
+                    "star": int(row[11]),
+                    "passive_skill": str(row[9] or ""),
+                }
+            )
+            used.add(cid)
+            if len(members) >= 5:
+                break
+        return members
+
+    @staticmethod
+    def _team_power(members: list[dict]) -> float:
+        return sum(
+            calculate_team_power(
+                int(m.get("hp", 0)),
+                int(m.get("attack", 0)),
+                int(m.get("defense", 0)),
+                int(m.get("level", 1)),
+                int(m.get("star", 1)),
+            )
+            for m in members
+        )
+
+    @staticmethod
     async def hunt(guild_id: int, user_id: int) -> CombatResult:
         async with BaseService.with_user_transaction(guild_id, user_id, "hunt") as conn:
             await player_repo.ensure_player_ready(conn, guild_id, user_id)
@@ -124,9 +188,105 @@ class CombatService(BaseService):
             if remain > 0:
                 return CombatResult()
 
-            result = await CombatService._simulate_hunt(conn, guild_id, user_id)
+            team = await CombatService._load_team_members(conn, guild_id, user_id)
+            if not team:
+                return CombatResult()
+
+            player_row = await player_repo.get_player_stats(conn, guild_id, user_id)
+            if not player_row:
+                return CombatResult()
+            level = int(player_row[0])
+
+            team_power = CombatService._team_power(team)
+            has_healer = any(str(m.get("role", "")).lower() == "healer" for m in team)
+            pack = random.randint(3, 6)
+            kills = 0
+            total_gold = 0
+            total_xp = 0
+            total_turns = 0
+            total_damage_dealt = 0
+            total_damage_taken = 0
+            drops: dict[str, int] = {}
+            logs: list[str] = []
+            encounters: dict[str, int] = {}
+
+            for idx in range(pack):
+                monster = random.choice(MONSTERS)
+                mid = str(monster.get("id", "monster"))
+                encounters[mid] = encounters.get(mid, 0) + 1
+
+                hp_scale = 0.9 + min(1.8, team_power / 700.0)
+                atk_scale = 0.85 + min(1.2, team_power / 1200.0)
+                def_scale = 0.9 + min(1.0, team_power / 1500.0)
+                battle = run_team_battle(
+                    team,
+                    int(monster["hp"] * hp_scale),
+                    int(monster["atk"] * atk_scale),
+                    int(monster["def"] * def_scale),
+                )
+                total_turns += int(battle.get("turns", 0))
+                total_damage_dealt += int(battle.get("damage_dealt", 0))
+                total_damage_taken += int(battle.get("damage_taken", 0))
+
+                if not battle.get("win", False):
+                    logs.append(f"{idx + 1}. Thua trước {monster['name']}.")
+                    break
+
+                kills += 1
+                reward_mult = 0.9 + min(0.45, team_power / 2400.0)
+                g, x = roll_gold_xp(monster, reward_mult=reward_mult)
+                total_gold += g
+                total_xp += x
+                logs.append(f"{idx + 1}. Hạ {monster['name']} (+{g} gold, +{x} xp)")
+
+                rolled = roll_drops(monster, drop_mult=1.0 + len(team) * 0.04)
+                for item_id, amount in rolled.items():
+                    drops[item_id] = drops.get(item_id, 0) + amount
+
+            if total_gold > 0:
+                await player_repo.add_gold(conn, guild_id, user_id, total_gold)
+                await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "hunt_reward")
+            if drops:
+                await batch_add_inventory(conn, guild_id, user_id, drops)
+            await quest_repo.add_quest_progress(conn, guild_id, user_id, "team_hunt_runs", 1)
+            if kills == pack and pack > 0:
+                await quest_repo.add_quest_progress(conn, guild_id, user_id, "team_hunt_clears", 1)
+            if has_healer and kills > 0:
+                await quest_repo.add_quest_progress(conn, guild_id, user_id, "use_healer_battles", 1)
+            new_level, remain_xp, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, user_id, total_xp)
+
+            await telemetry_repo.record_combat_telemetry(
+                conn,
+                guild_id,
+                "hunt",
+                level,
+                kills == pack,
+                gold=total_gold,
+                xp=total_xp,
+                turns=total_turns,
+                damage_dealt=total_damage_dealt,
+                damage_taken=total_damage_taken,
+                drop_qty=sum(int(v) for v in drops.values()),
+            )
+
+            result = CombatResult(
+                ok=True,
+                pack=pack,
+                kills=kills,
+                slime_kills=0,
+                gold=total_gold,
+                xp=total_xp,
+                leveled_up=leveled_up,
+                level=new_level,
+                xp_remain=remain_xp,
+                hp=int(player_row[2]),
+                effective_hp=int(player_row[2]),
+                drops=drops,
+                logs=logs,
+                encounters=encounters,
+            )
             
-            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "hunt", 45)
+            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "hunt", RPG_HUNT_COOLDOWN)
             await conn.commit()
             
             return result
@@ -186,6 +346,9 @@ class CombatService(BaseService):
         defeated = False
         encounter_counts: dict[str, int] = {}
 
+        killed_monsters: list[str] = []
+        quest_progress_updates: list[tuple[str, int]] = []
+        
         for i in range(pack):
             if player_hp <= 0:
                 break
@@ -229,6 +392,8 @@ class CombatService(BaseService):
                 break
 
             kills += 1
+            killed_monsters.append(m["id"])
+            
             if m["id"] == "slime":
                 slime_kills += 1
 
@@ -254,24 +419,38 @@ class CombatService(BaseService):
             if battle_logs:
                 logs.extend([f"  {line}" for line in battle_logs[:4]])
 
-            await telemetry_repo.record_monster_kill(conn, guild_id, user_id, m["id"])
-            await quest_repo.add_quest_progress(conn, guild_id, user_id, "kill_monsters", 1)
+            quest_progress_updates.append(("kill_monsters", 1))
             if m["id"] == "slime":
-                await quest_repo.add_quest_progress(conn, guild_id, user_id, "kill_slime", 1)
+                quest_progress_updates.append(("kill_slime", 1))
 
             drop_mult = 1.0 + min(0.25, level * 0.01)
             drop_mult *= float(event.get("hunt_drop_mult", 1.0))
             rolled = roll_drops(m, drop_mult=drop_mult)
             for item_id, amount in rolled.items():
                 drops[item_id] = drops.get(item_id, 0) + amount
-                await inventory_repo.add_inventory(conn, guild_id, user_id, item_id, amount)
                 rarity = str((ITEMS.get(item_id) or {}).get("rarity", "common"))
                 rarity_counts[rarity] = rarity_counts.get(rarity, 0) + amount
 
+        if killed_monsters:
+            await batch_record_monster_kills(conn, guild_id, user_id, killed_monsters)
+        
+        if quest_progress_updates:
+            await batch_add_quest_progress(conn, guild_id, user_id, quest_progress_updates)
+            quest_progress_updates.append(("hunt_runs", 1))
+            await batch_add_quest_progress(conn, guild_id, user_id, quest_progress_updates)
+        else:
+            await batch_add_quest_progress(conn, guild_id, user_id, [("hunt_runs", 1)])
+        
+        if drops:
+            await batch_add_inventory(conn, guild_id, user_id, drops)
+        
+        if player_hp <= 0:
+            player_hp = int(max_hp * RPG_DEATH_HP_PERCENT)
+            logs.append("Chet nhung duoc hoi 30% HP de tiep tuc choi!")
+        
         player_hp = max(1, player_hp)
         base_hp_after = max(1, min(max_hp, player_hp - bonus_hp))
 
-        await quest_repo.add_quest_progress(conn, guild_id, user_id, "hunt_runs", 1)
         await player_repo.update_player_hp_gold(conn, guild_id, user_id, base_hp_after, total_gold)
         await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "hunt_reward")
         new_level, remain_xp, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, user_id, total_xp)
@@ -321,10 +500,76 @@ class CombatService(BaseService):
             if remain > 0:
                 return BossResult()
 
-            row = await player_repo.get_player_stats(conn, guild_id, user_id)
-            result = await CombatService._simulate_boss(conn, guild_id, user_id, row)
+            team = await CombatService._load_team_members(conn, guild_id, user_id)
+            if not team:
+                return BossResult()
+
+            player_row = await player_repo.get_player_stats(conn, guild_id, user_id)
+            if not player_row:
+                return BossResult()
+            level = int(player_row[0])
+
+            team_power = CombatService._team_power(team)
+            has_healer = any(str(m.get("role", "")).lower() == "healer" for m in team)
+            boss = random.choice(BOSS_VARIANTS)
+            hp_scale = 1.2 + min(2.5, team_power / 600.0)
+            atk_scale = 1.0 + min(1.3, team_power / 1400.0)
+            def_scale = 1.0 + min(1.0, team_power / 1800.0)
+            battle = run_team_battle(
+                team,
+                int(boss["hp"] * hp_scale),
+                int(boss["atk"] * atk_scale),
+                int(boss["def"] * def_scale),
+            )
+            win = bool(battle.get("win", False))
+
+            total_gold = 0
+            total_xp = 0
+            drops: dict[str, int] = {}
+            if win:
+                reward_mult = 1.0 + min(0.55, team_power / 2600.0)
+                total_gold, total_xp = roll_gold_xp(boss, reward_mult=reward_mult)
+                drops = roll_drops(boss, drop_mult=1.0)
+                if total_gold > 0:
+                    await player_repo.add_gold(conn, guild_id, user_id, total_gold)
+                    await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "boss_reward")
+                if drops:
+                    await batch_add_inventory(conn, guild_id, user_id, drops)
+                await quest_repo.add_quest_progress(conn, guild_id, user_id, "boss_wins", 1)
+                if has_healer:
+                    await quest_repo.add_quest_progress(conn, guild_id, user_id, "use_healer_battles", 1)
+
+            new_level, remain_xp, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, user_id, total_xp)
+            await telemetry_repo.record_combat_telemetry(
+                conn,
+                guild_id,
+                "boss",
+                level,
+                win,
+                gold=total_gold,
+                xp=total_xp,
+                turns=int(battle.get("turns", 0)),
+                damage_dealt=int(battle.get("damage_dealt", 0)),
+                damage_taken=int(battle.get("damage_taken", 0)),
+                drop_qty=sum(int(v) for v in drops.values()),
+            )
+
+            result = BossResult(
+                ok=True,
+                win=win,
+                boss_id=str(boss.get("id", "boss")),
+                boss=str(boss.get("name", "Boss")),
+                gold=total_gold,
+                xp=total_xp,
+                drops=drops,
+                base_hp=max(0, int(battle.get("monster_hp", 0))),
+                leveled_up=leveled_up,
+                level=new_level,
+                xp_remain=remain_xp,
+                logs=list(battle.get("logs", [])),
+            )
             
-            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "boss", 1800)
+            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "boss", RPG_BOSS_COOLDOWN)
             await conn.commit()
             
             return result
@@ -363,9 +608,9 @@ class CombatService(BaseService):
 
         candidates = [b for b in BOSS_VARIANTS if int(b.get("min_level", 1)) <= level]
         boss = (candidates[-1] if candidates else BOSS_VARIANTS[0]).copy()
-        boss_hp = int(boss["hp"]) + level * 12
-        boss_atk = int(boss["atk"]) + level // 2
-        boss_def = int(boss["def"]) + level // 4
+        boss_hp = int(int(boss["hp"]) * (1 + level * 0.08))
+        boss_atk = int(int(boss["atk"]) * (1 + level * 0.05))
+        boss_def = int(int(boss["def"]) * (1 + level * 0.03))
 
         battle = CombatService._run_boss_phase(
             eff_hp, eff_atk, eff_def, eff_max_hp,
@@ -468,9 +713,9 @@ class CombatService(BaseService):
         total_damage_dealt = 0
         total_damage_taken = 0
 
-        lifesteal = max(0.0, min(0.9, float(player_lifesteal)))
+        lifesteal = max(0.0, float(player_lifesteal))
         crit_bonus = max(0.0, float(player_crit_bonus))
-        damage_reduction = max(0.0, min(0.85, float(player_damage_reduction)))
+        damage_reduction = min(RPG_DAMAGE_REDUCTION_CAP, max(0.0, float(player_damage_reduction)))
 
         while boss_hp > 0 and player_hp > 0:
             turns += 1
@@ -492,14 +737,16 @@ class CombatService(BaseService):
             turn_logs.append(f"Turn {turns}: bạn gây {dealt} dmg{' (CRIT)' if is_crit else ''}")
 
             if lifesteal > 0 and dealt > 0 and player_hp > 0:
-                heal = int(dealt * lifesteal)
+                raw_heal = int(dealt * lifesteal)
+                max_heal = int(player_max_hp * RPG_LIFESTEAL_HEAL_CAP)
+                heal = min(raw_heal, max_heal)
                 if heal > 0 and player_hp < player_max_hp:
                     old_hp = player_hp
                     player_hp = min(player_max_hp, player_hp + heal)
                     healed = max(0, player_hp - old_hp)
                     if healed > 0:
                         total_lifesteal_heal += healed
-                        turn_logs.append(f"Turn {turns}: lifesteal hồi {healed} HP")
+                        turn_logs.append(f"Turn {turns}: lifesteal hoi {healed} HP")
 
             if boss_hp <= 0:
                 turn_logs.append(f"Turn {turns}: boss gục")
@@ -558,9 +805,88 @@ class CombatService(BaseService):
             if remain > 0:
                 return DungeonResult()
 
-            result = await CombatService._simulate_dungeon(conn, guild_id, user_id)
+            team = await CombatService._load_team_members(conn, guild_id, user_id)
+            if not team:
+                return DungeonResult()
+
+            player_row = await player_repo.get_player_stats(conn, guild_id, user_id)
+            if not player_row:
+                return DungeonResult()
+            level = int(player_row[0])
+
+            team_power = CombatService._team_power(team)
+            has_healer = any(str(m.get("role", "")).lower() == "healer" for m in team)
+            floors = random.randint(3, 6)
+            cleared = 0
+            total_gold = 0
+            total_xp = 0
+            drops: dict[str, int] = {}
+            logs: list[str] = []
+
+            for floor in range(1, floors + 1):
+                is_boss_floor = floor == floors
+                enemy = random.choice(BOSS_VARIANTS if is_boss_floor else MONSTERS)
+                floor_mult = 0.95 + floor * 0.14
+                battle = run_team_battle(
+                    team,
+                    int(enemy["hp"] * floor_mult * (1.0 + min(1.0, team_power / 1600.0))),
+                    int(enemy["atk"] * floor_mult),
+                    int(enemy["def"] * (1.0 + floor * 0.08)),
+                )
+                if not battle.get("win", False):
+                    logs.append(f"Tầng {floor}: thua trước {enemy['name']}.")
+                    break
+
+                cleared += 1
+                reward_mult = floor_mult * (0.95 + min(0.45, team_power / 3000.0))
+                g, x = roll_gold_xp(enemy, reward_mult=reward_mult)
+                total_gold += g
+                total_xp += x
+                rolled = roll_drops(enemy, drop_mult=1.0 + floor * 0.05)
+                for item_id, amount in rolled.items():
+                    drops[item_id] = drops.get(item_id, 0) + amount
+                logs.append(f"Tầng {floor}: hạ {enemy['name']} (+{g} gold, +{x} xp)")
+
+            if total_gold > 0:
+                await player_repo.add_gold(conn, guild_id, user_id, total_gold)
+                await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "dungeon_reward")
+            if drops:
+                await batch_add_inventory(conn, guild_id, user_id, drops)
+            if cleared == floors and floors > 0:
+                await quest_repo.add_quest_progress(conn, guild_id, user_id, "team_dungeon_clears", 1)
+            if has_healer and cleared > 0:
+                await quest_repo.add_quest_progress(conn, guild_id, user_id, "use_healer_battles", 1)
+            new_level, remain_xp, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, user_id, total_xp)
+            await telemetry_repo.record_combat_telemetry(
+                conn,
+                guild_id,
+                "dungeon",
+                level,
+                cleared == floors,
+                gold=total_gold,
+                xp=total_xp,
+                turns=max(1, len(logs)),
+                damage_dealt=0,
+                damage_taken=0,
+                drop_qty=sum(int(v) for v in drops.values()),
+            )
+
+            result = DungeonResult(
+                ok=True,
+                cleared=cleared == floors,
+                floors_cleared=cleared,
+                total_floors=floors,
+                gold=total_gold,
+                xp=total_xp,
+                drops=drops,
+                hp=int(player_row[2]),
+                level=new_level,
+                xp_remain=remain_xp,
+                leveled_up=leveled_up,
+                logs=logs,
+            )
             
-            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "dungeon", 3600)
+            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "dungeon", RPG_DUNGEON_COOLDOWN)
             await conn.commit()
             
             return result
@@ -645,7 +971,7 @@ class CombatService(BaseService):
                 break
 
             floors_cleared += 1
-            reward_mult = 1.0 + floor * 0.15
+            reward_mult = min(2.5, 1.0 + floor * 0.15)
             reward_mult *= float(event.get("boss_reward_mult", 1.0)) if floor == total_floors else 1.0
             g, x = roll_gold_xp(reward_src, reward_mult=reward_mult)
             total_gold += g
@@ -657,7 +983,9 @@ class CombatService(BaseService):
             rolled = roll_drops(reward_src, drop_mult=drop_mult)
             for item_id, amount in rolled.items():
                 drops[item_id] = drops.get(item_id, 0) + amount
-                await inventory_repo.add_inventory(conn, guild_id, user_id, item_id, amount)
+        
+        if drops:
+            await batch_add_inventory(conn, guild_id, user_id, drops)
 
             logs.append(f"Tầng {floor}: hạ {enemy_name} (+{g} gold, +{x} xp)")
 
@@ -797,7 +1125,7 @@ class CombatService(BaseService):
                 g, x = roll_gold_xp(monster, reward_mult=reward_mult)
                 total_gold += g
                 total_xp += x
-                rolled = roll_drops(monster, drop_mult=(1.0 + len(members) * 0.05) * float(event.get("hunt_drop_mult", 1.0)))
+                rolled = roll_drops(monster, drop_mult=(1.0 + len(members) * 0.06) * float(event.get("hunt_drop_mult", 1.0)))
                 for item_id, amount in rolled.items():
                     drops[item_id] = drops.get(item_id, 0) + amount
                 logs.append(f"{i+1}. Team hạ {monster['name']} (+{g} gold, +{x} xp)")
@@ -805,7 +1133,7 @@ class CombatService(BaseService):
                 logs.append(f"{i+1}. Team wipe trước {monster['name']}")
                 break
 
-        party_bonus = max(1.0, 1.0 + (len(members) - 1) * 0.08)
+        party_bonus = max(1.0, 1.0 + (len(members) - 1) * 0.12)
         total_gold = int(total_gold * party_bonus)
         total_xp = int(total_xp * party_bonus)
 
@@ -814,28 +1142,42 @@ class CombatService(BaseService):
         xp_each = total_xp // n
 
         member_results: list[dict] = []
+        member_ids = [int(m["user_id"]) for m in members]
+        
+        gold_flow_entries = [(gold_each, "party_hunt_reward") for _ in member_ids]
+        
         for m in members:
             uid = int(m["user_id"])
             bonus_hp = int(m["bonus_hp"])
             base_hp_after = max(1, min(int(m["base_max_hp"]), int(m["hp"]) - bonus_hp))
 
             await player_repo.update_player_hp_gold(conn, guild_id, uid, base_hp_after, gold_each)
-            await telemetry_repo.record_gold_flow(conn, guild_id, uid, gold_each, "party_hunt_reward")
             new_level, _, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, uid, xp_each)
-            await quest_repo.add_quest_progress(conn, guild_id, uid, "hunt_runs", 1)
-            await quest_repo.add_quest_progress(conn, guild_id, uid, "kill_monsters", int(m["kills"]))
+            await batch_add_quest_progress(conn, guild_id, uid, [
+                ("hunt_runs", 1),
+                ("kill_monsters", int(m["kills"])),
+            ])
 
             member_results.append({
                 "user_id": uid, "hp": base_hp_after, "gold": gold_each, "xp": xp_each,
                 "kills": int(m["kills"]), "dealt": int(m["dealt"]), "taken": int(m["taken"]),
                 "level": int(new_level), "leveled_up": bool(leveled_up),
             })
+        
+        for uid in member_ids:
+            await telemetry_repo.record_gold_flow(conn, guild_id, uid, gold_each, "party_hunt_reward")
 
         receivers = [m for m in members if m["alive"]] or members
+        party_inventory: dict[int, dict[str, int]] = {uid: {} for uid in member_ids}
         for item_id, amount in drops.items():
             for _ in range(int(amount)):
                 r = random.choice(receivers)
-                await inventory_repo.add_inventory(conn, guild_id, int(r["user_id"]), item_id, 1)
+                r_uid = int(r["user_id"])
+                party_inventory[r_uid][item_id] = party_inventory[r_uid].get(item_id, 0) + 1
+        
+        for uid, items in party_inventory.items():
+            if items:
+                await batch_add_inventory(conn, guild_id, uid, items)
 
         return PartyHuntResult(
             ok=True, pack=pack, kills=kills,

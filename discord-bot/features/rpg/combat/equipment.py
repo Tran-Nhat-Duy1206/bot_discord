@@ -1,4 +1,4 @@
-from ..data.data import ITEMS
+from ..data import ITEMS
 from ..db.db import add_inventory, remove_inventory, get_equipped
 
 

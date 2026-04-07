@@ -32,11 +32,14 @@ class QuestInfo:
 
 
 OBJECTIVE_NAMES = {
-    "kill_monsters": "Hạ quái",
-    "kill_slime": "Hạ Slime Jackpot",
-    "hunt_runs": "Chạy hunt",
-    "open_lootboxes": "Mở lootbox",
+    "team_hunt_runs": "Team hunt",
+    "team_hunt_clears": "Clear trọn pack",
+    "team_dungeon_clears": "Clear dungeon",
+    "summon_times": "Triệu hồi gacha",
+    "use_healer_battles": "Đánh trận có healer",
     "boss_wins": "Thắng boss",
+    "kill_slime": "Hạ Slime Jackpot",
+    "open_lootbox": "Mở lootbox",
 }
 
 

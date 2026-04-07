@@ -1,4 +1,4 @@
-from ..data.data import SKILLS
+from ..data import SKILLS
 from ..db.db import get_unlocked_skills, cooldown_remain, set_cooldown
 
 

@@ -3,7 +3,7 @@ from typing import Optional
 
 import aiosqlite
 
-from ..data.data import QUEST_DEFINITIONS
+from ..data import QUEST_DEFINITIONS
 
 
 async def ensure_default_quests(conn: aiosqlite.Connection, guild_id: int, user_id: int) -> None:

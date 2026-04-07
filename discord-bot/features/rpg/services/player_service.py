@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..data.data import ITEMS, SKILLS, xp_need_for_next
+from ..data import ITEMS, SKILLS, xp_need_for_next
 
 from ..repositories import player_repo, inventory_repo
 from .base import BaseService

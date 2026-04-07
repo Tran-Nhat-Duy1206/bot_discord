@@ -4,7 +4,7 @@ import asyncio
 
 import aiosqlite
 
-from ..data.data import QUEST_DEFINITIONS, xp_need_for_next
+from ..data import QUEST_DEFINITIONS, xp_need_for_next, CHARACTERS
 
 
 DB_PATH = os.getenv("RPG_DB", "data/rpg.db")
@@ -19,6 +19,11 @@ RPG_PAY_MIN_LEVEL = int(os.getenv("RPG_PAY_MIN_LEVEL", "5"))
 RPG_PAY_MIN_ACCOUNT_AGE_SECS = int(os.getenv("RPG_PAY_MIN_ACCOUNT_AGE_SECS", "259200"))
 RPG_PAY_DAILY_SEND_LIMIT = int(os.getenv("RPG_PAY_DAILY_SEND_LIMIT", "5000"))
 RPG_PAY_DAILY_PAIR_LIMIT = int(os.getenv("RPG_PAY_DAILY_PAIR_LIMIT", "2000"))
+
+RPG_REST_COOLDOWN = int(os.getenv("RPG_REST_COOLDOWN", "300"))
+RPG_REST_HP_PERCENT = float(os.getenv("RPG_REST_HP_PERCENT", "0.5"))
+RPG_HP_REGEN_RATE = float(os.getenv("RPG_HP_REGEN_RATE", "0.02"))
+RPG_HP_REGEN_INTERVAL = int(os.getenv("RPG_HP_REGEN_INTERVAL", "60"))
 
 DB_WRITE_LOCK = asyncio.Lock()
 _DB_READY = False
@@ -269,6 +274,75 @@ async def _db_init():
         except Exception:
             pass
 
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_recovery (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                rest_ready_at INTEGER NOT NULL DEFAULT 0,
+                last_regen_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(guild_id, user_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS characters (
+                character_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                rarity TEXT NOT NULL,
+                role TEXT NOT NULL,
+                hp INTEGER NOT NULL,
+                attack INTEGER NOT NULL,
+                defense INTEGER NOT NULL,
+                speed INTEGER NOT NULL,
+                gender TEXT NOT NULL,
+                passive_skill TEXT,
+                image_url TEXT,
+                is_limited INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_characters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id TEXT NOT NULL,
+                is_main INTEGER NOT NULL DEFAULT 0,
+                level INTEGER NOT NULL DEFAULT 1,
+                exp INTEGER NOT NULL DEFAULT 0,
+                star INTEGER NOT NULL DEFAULT 1,
+                shard_count INTEGER NOT NULL DEFAULT 0,
+                obtained_at INTEGER NOT NULL,
+                UNIQUE(guild_id, user_id, character_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS teams (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                slot INTEGER NOT NULL,
+                character_id TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id, slot)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS gacha_pity (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                pity_count INTEGER NOT NULL DEFAULT 0,
+                last_pull_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(guild_id, user_id)
+            )
+            """
+        )
+
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_players_gold ON players(guild_id, gold DESC)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_players_level ON players(guild_id, level DESC, xp DESC)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_kills_total ON monsters_killed(guild_id, user_id, kills DESC)")
@@ -286,6 +360,12 @@ async def _db_init():
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rpg_season_rewards_sid ON rpg_season_rewards(season_id, guild_id, rank)"
         )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_player_characters_user ON player_characters(guild_id, user_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_teams_user ON teams(guild_id, user_id)"
+        )
         await conn.commit()
 
 
@@ -297,7 +377,45 @@ async def ensure_db_ready():
         if _DB_READY:
             return
         await _db_init()
+        await _seed_characters()
         _DB_READY = True
+
+
+async def _seed_characters():
+    from .db import open_db
+    async with open_db() as conn:
+        for char_id, char_data in CHARACTERS.items():
+            await conn.execute(
+                """
+                INSERT INTO characters(character_id, name, rarity, role, hp, attack, defense, speed, gender, passive_skill, image_url, is_limited)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(character_id) DO UPDATE SET
+                    name = excluded.name,
+                    rarity = excluded.rarity,
+                    role = excluded.role,
+                    hp = excluded.hp,
+                    attack = excluded.attack,
+                    defense = excluded.defense,
+                    speed = excluded.speed,
+                    gender = excluded.gender,
+                    passive_skill = excluded.passive_skill,
+                    image_url = excluded.image_url
+                """,
+                (
+                    char_id,
+                    char_data["name"],
+                    char_data["rarity"],
+                    char_data["role"],
+                    char_data["hp"],
+                    char_data["attack"],
+                    char_data["defense"],
+                    char_data["speed"],
+                    char_data["gender"],
+                    char_data.get("passive_skill", ""),
+                    char_data.get("image_url", ""),
+                ),
+            )
+        await conn.commit()
 
 
 async def ensure_player(conn: aiosqlite.Connection, guild_id: int, user_id: int):
@@ -939,3 +1057,161 @@ async def apply_season_soft_reset(conn: aiosqlite.Connection, guild_id: int) -> 
         (now + 86400, now + 86400 * 7, now, guild_id),
     )
     return len(rows)
+
+
+async def get_all_characters(conn: aiosqlite.Connection):
+    async with conn.execute("SELECT character_id, name, rarity, role, hp, attack, defense, speed, gender, passive_skill, image_url, is_limited FROM characters") as cur:
+        rows = await cur.fetchall()
+    return rows
+
+
+async def get_character(conn: aiosqlite.Connection, character_id: str):
+    async with conn.execute(
+        "SELECT character_id, name, rarity, role, hp, attack, defense, speed, gender, passive_skill, image_url, is_limited FROM characters WHERE character_id = ?",
+        (character_id,),
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def add_player_character(conn: aiosqlite.Connection, guild_id: int, user_id: int, character_id: str, is_main: bool = False) -> bool:
+    now = int(time.time())
+    try:
+        await conn.execute(
+            """
+            INSERT INTO player_characters(guild_id, user_id, character_id, is_main, level, exp, star, shard_count, obtained_at)
+            VALUES (?, ?, ?, ?, 1, 0, 1, 0, ?)
+            """,
+            (guild_id, user_id, character_id, 1 if is_main else 0, now),
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def get_player_characters(conn: aiosqlite.Connection, guild_id: int, user_id: int):
+    async with conn.execute(
+        """
+        SELECT pc.id, pc.character_id, pc.is_main, pc.level, pc.exp, pc.star, pc.shard_count, c.name, c.rarity, c.role, c.passive_skill
+        FROM player_characters pc
+        JOIN characters c ON c.character_id = pc.character_id
+        WHERE pc.guild_id = ? AND pc.user_id = ?
+        ORDER BY pc.is_main DESC, pc.obtained_at ASC
+        """,
+        (guild_id, user_id),
+    ) as cur:
+        return await cur.fetchall()
+
+
+async def get_main_character(conn: aiosqlite.Connection, guild_id: int, user_id: int):
+    async with conn.execute(
+        """
+        SELECT pc.id, pc.character_id, pc.is_main, pc.level, pc.exp, pc.star, pc.shard_count, c.name, c.rarity, c.role, c.hp, c.attack, c.defense, c.speed, c.passive_skill
+        FROM player_characters pc
+        JOIN characters c ON c.character_id = pc.character_id
+        WHERE pc.guild_id = ? AND pc.user_id = ? AND pc.is_main = 1
+        """,
+        (guild_id, user_id),
+    ) as cur:
+        return await cur.fetchone()
+
+
+async def set_main_character(conn: aiosqlite.Connection, guild_id: int, user_id: int, character_id: str) -> bool:
+    await conn.execute("UPDATE player_characters SET is_main = 0 WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+    result = await conn.execute(
+        "UPDATE player_characters SET is_main = 1 WHERE guild_id = ? AND user_id = ? AND character_id = ?",
+        (guild_id, user_id, character_id),
+    )
+    return result.rowcount > 0
+
+
+async def add_shards(conn: aiosqlite.Connection, guild_id: int, user_id: int, character_id: str, amount: int):
+    await conn.execute(
+        """
+        INSERT INTO player_characters(guild_id, user_id, character_id, is_main, level, exp, star, shard_count, obtained_at)
+        VALUES (?, ?, ?, 0, 1, 0, 1, ?, ?)
+        ON CONFLICT(guild_id, user_id, character_id)
+        DO UPDATE SET shard_count = shard_count + excluded.shard_count
+        """,
+        (guild_id, user_id, character_id, max(0, int(amount)), int(time.time())),
+    )
+
+
+async def upgrade_character_star(conn: aiosqlite.Connection, guild_id: int, user_id: int, character_id: str) -> bool:
+    async with conn.execute(
+        "SELECT shard_count FROM player_characters WHERE guild_id = ? AND user_id = ? AND character_id = ?",
+        (guild_id, user_id, character_id),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return False
+    current_shards = int(row[0])
+    cost = 10
+    if current_shards < cost:
+        return False
+    await conn.execute(
+        "UPDATE player_characters SET shard_count = shard_count - ?, star = star + 1 WHERE guild_id = ? AND user_id = ? AND character_id = ?",
+        (cost, guild_id, user_id, character_id),
+    )
+    return True
+
+
+async def get_team(conn: aiosqlite.Connection, guild_id: int, user_id: int):
+    async with conn.execute(
+        """
+        SELECT t.slot, t.character_id, c.name, c.rarity, c.role, c.hp, c.attack, c.defense, c.speed, c.passive_skill, pc.level, pc.star
+        FROM teams t
+        JOIN characters c ON c.character_id = t.character_id
+        JOIN player_characters pc ON pc.character_id = t.character_id AND pc.guild_id = t.guild_id AND pc.user_id = t.user_id
+        WHERE t.guild_id = ? AND t.user_id = ?
+        ORDER BY t.slot
+        """,
+        (guild_id, user_id),
+    ) as cur:
+        return await cur.fetchall()
+
+
+async def set_team_character(conn: aiosqlite.Connection, guild_id: int, user_id: int, slot: int, character_id: str) -> bool:
+    try:
+        await conn.execute(
+            "INSERT INTO teams(guild_id, user_id, slot, character_id) VALUES (?, ?, ?, ?)",
+            (guild_id, user_id, slot, character_id),
+        )
+        return True
+    except Exception:
+        await conn.execute(
+            "UPDATE teams SET character_id = ? WHERE guild_id = ? AND user_id = ? AND slot = ?",
+            (character_id, guild_id, user_id, slot),
+        )
+        return True
+
+
+async def clear_team(conn: aiosqlite.Connection, guild_id: int, user_id: int):
+    await conn.execute("DELETE FROM teams WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+
+async def get_gacha_pity(conn: aiosqlite.Connection, guild_id: int, user_id: int):
+    async with conn.execute(
+        "SELECT pity_count, last_pull_at FROM gacha_pity WHERE guild_id = ? AND user_id = ?",
+        (guild_id, user_id),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return (0, 0)
+    return (int(row[0]), int(row[1]))
+
+
+async def update_gacha_pity(conn: aiosqlite.Connection, guild_id: int, user_id: int, pity_count: int):
+    now = int(time.time())
+    await conn.execute(
+        """
+        INSERT INTO gacha_pity(guild_id, user_id, pity_count, last_pull_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET pity_count = excluded.pity_count, last_pull_at = excluded.last_pull_at
+        """,
+        (guild_id, user_id, pity_count, now),
+    )
+
+
+def calculate_team_power(hp: int, attack: int, defense: int, level: int = 1, star: int = 1) -> float:
+    return (attack + defense + hp * 0.2) * (1 + (level - 1) * 0.1) * (1 + (star - 1) * 0.2)

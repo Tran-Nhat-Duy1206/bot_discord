@@ -2,6 +2,8 @@ from typing import Optional
 
 import aiosqlite
 
+from ..cache import INVENTORY_CACHE, invalidate_inventory
+
 
 async def add_inventory(
     conn: aiosqlite.Connection,
@@ -21,6 +23,7 @@ async def add_inventory(
         """,
         (guild_id, user_id, item_id, amount),
     )
+    await invalidate_inventory(guild_id, user_id)
 
 
 async def remove_inventory(
@@ -51,6 +54,7 @@ async def remove_inventory(
             "UPDATE inventory SET amount = ? WHERE guild_id = ? AND user_id = ? AND item_id = ?",
             (remain, guild_id, user_id, item_id),
         )
+    await invalidate_inventory(guild_id, user_id)
     return True
 
 
@@ -59,6 +63,10 @@ async def get_inventory(
     guild_id: int,
     user_id: int,
 ) -> list[tuple[str, int]]:
+    cached = await INVENTORY_CACHE.get(guild_id, user_id)
+    if cached is not None:
+        return cached
+    
     async with conn.execute(
         """
         SELECT item_id, amount
@@ -69,7 +77,9 @@ async def get_inventory(
         (guild_id, user_id),
     ) as cur:
         rows = await cur.fetchall()
-    return [(str(item_id), int(amount)) for item_id, amount in rows]
+    result = [(str(item_id), int(amount)) for item_id, amount in rows]
+    await INVENTORY_CACHE.set(result, guild_id, user_id)
+    return result
 
 
 async def get_item_count(
@@ -96,3 +106,31 @@ async def clear_inventory_slot(
         "DELETE FROM inventory WHERE guild_id = ? AND user_id = ? AND item_id = ?",
         (guild_id, user_id, item_id),
     )
+    await invalidate_inventory(guild_id, user_id)
+
+
+async def get_inventory_batch(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_ids: list[int],
+) -> dict[int, list[tuple[str, int]]]:
+    if not user_ids:
+        return {}
+    
+    placeholders = ", ".join("?" * len(user_ids))
+    async with conn.execute(
+        f"""
+        SELECT user_id, item_id, amount
+        FROM inventory
+        WHERE guild_id = ? AND user_id IN ({placeholders}) AND amount > 0
+        ORDER BY user_id, amount DESC, item_id ASC
+        """,
+        (guild_id, *user_ids),
+    ) as cur:
+        rows = await cur.fetchall()
+    
+    result: dict[int, list[tuple[str, int]]] = {uid: [] for uid in user_ids}
+    for row in rows:
+        uid = int(row[0])
+        result[uid].append((str(row[1]), int(row[2])))
+    return result

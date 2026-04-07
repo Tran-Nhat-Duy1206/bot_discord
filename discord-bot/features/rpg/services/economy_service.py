@@ -3,9 +3,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from ..data.data import ITEMS, CRAFT_RECIPES
+from ..data import ITEMS, CRAFT_RECIPES
 
-from ..repositories import player_repo, inventory_repo, telemetry_repo
+from ..repositories import player_repo, inventory_repo, telemetry_repo, quest_repo
+from ..shop import get_sell_price
 from .base import BaseService
 
 
@@ -98,7 +99,7 @@ class EconomyService(BaseService):
             return True, f"✅ Đã mua {data['emoji']} **{data['name']}** x{amount} với giá **{total}** gold."
 
     @staticmethod
-    async def sell_item(guild_id: int, user_id: int, item_id: str, amount: int = 1) -> tuple[bool, str, int]:
+    async def sell_item(guild_id: int, user_id: int, item_id: str, amount: int = 1, black_market: bool = False) -> tuple[bool, str, int]:
         async with BaseService.with_user_transaction(guild_id, user_id, "sell") as conn:
             await player_repo.ensure_player_ready(conn, guild_id, user_id)
             
@@ -106,9 +107,10 @@ class EconomyService(BaseService):
             if not data:
                 return False, "Item không tồn tại.", 0
 
-            sell_price = int(data["sell"])
+            sell_price = get_sell_price(item_id, black_market=black_market)
             if sell_price <= 0:
-                return False, "Item này không thể bán.", 0
+                location = "chợ đen" if black_market else "shop"
+                return False, f"Item này không thể bán ở {location}.", 0
 
             ok = await inventory_repo.remove_inventory(conn, guild_id, user_id, item_id, amount)
             if not ok:
@@ -116,10 +118,11 @@ class EconomyService(BaseService):
 
             total = sell_price * amount
             await player_repo.add_gold(conn, guild_id, user_id, total)
-            await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total, "shop_sell")
+            await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total, "shop_sell" if not black_market else "blackmarket_sell")
             await conn.commit()
 
-            return True, f"💰 Đã bán **{data['name']}** x{amount}, nhận **{total}** gold.", total
+            location_label = "🌑 chợ đen" if black_market else "shop"
+            return True, f"💰 Đã bán **{data['name']}** x{amount}, nhận **{total}** gold ({location_label}).", total
 
     @staticmethod
     async def craft_item(guild_id: int, user_id: int, recipe_id: str, amount: int = 1) -> CraftResult:
@@ -207,6 +210,8 @@ class EconomyService(BaseService):
             if total_gold > 0:
                 await player_repo.add_gold(conn, guild_id, user_id, total_gold)
                 await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "lootbox_open")
+
+            await quest_repo.add_quest_progress(conn, guild_id, user_id, "open_lootbox", amount)
 
             await conn.commit()
 
