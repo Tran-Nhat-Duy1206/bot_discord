@@ -63,6 +63,28 @@ def _is_vi(lang: str) -> bool:
 
 class PlayerService(BaseService):
     @staticmethod
+    async def _resolve_target_character_id(conn, guild_id: int, user_id: int, character_id: str | None = None) -> tuple[bool, str | None, str]:
+        cid = str(character_id or "").strip().lower()
+        if cid:
+            async with conn.execute(
+                "SELECT 1 FROM player_characters WHERE guild_id = ? AND user_id = ? AND character_id = ?",
+                (guild_id, user_id, cid),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return False, None, "character_not_owned"
+            return True, cid, ""
+
+        async with conn.execute(
+            "SELECT character_id FROM player_characters WHERE guild_id = ? AND user_id = ? AND is_main = 1 LIMIT 1",
+            (guild_id, user_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row and row[0]:
+            return True, str(row[0]), ""
+        return False, None, "no_main"
+
+    @staticmethod
     async def get_profile(guild_id: int, user_id: int) -> ProfileResult:
         async with BaseService.with_user_transaction(guild_id, user_id, "get_profile") as conn:
             await player_repo.ensure_player_ready(conn, guild_id, user_id)
@@ -75,7 +97,14 @@ class PlayerService(BaseService):
             from ..combat.equipment import equipped_profile
             from ..combat.skills import skill_profile
             
-            profile = await equipped_profile(conn, guild_id, user_id)
+            ok_target, target_cid, _ = await PlayerService._resolve_target_character_id(conn, guild_id, user_id, None)
+            profile = await equipped_profile(
+                conn,
+                guild_id,
+                user_id,
+                character_id=target_cid if ok_target else None,
+                fallback_legacy=bool(ok_target),
+            )
             sprofile = await skill_profile(conn, guild_id, user_id)
 
             bonus_atk = int(profile["attack"])
@@ -115,7 +144,13 @@ class PlayerService(BaseService):
         return items
 
     @staticmethod
-    async def equip_item(guild_id: int, user_id: int, item_id: str, lang: str = "en") -> tuple[bool, str]:
+    async def equip_item(
+        guild_id: int,
+        user_id: int,
+        item_id: str,
+        lang: str = "en",
+        character_id: str | None = None,
+    ) -> tuple[bool, str]:
         data = ITEMS.get(item_id)
         if not data:
             return False, ("Item không tồn tại." if _is_vi(lang) else "Item does not exist.")
@@ -128,31 +163,74 @@ class PlayerService(BaseService):
 
         async with BaseService.with_user_transaction(guild_id, user_id, "equip") as conn:
             await player_repo.ensure_player_ready(conn, guild_id, user_id)
+
+            ok_target, target_cid, reason = await PlayerService._resolve_target_character_id(conn, guild_id, user_id, character_id)
+            if not ok_target:
+                if reason == "character_not_owned":
+                    return False, ("Bạn không sở hữu hero này." if _is_vi(lang) else "You don't own this hero.")
+                return False, ("Bạn chưa có Captain để trang bị." if _is_vi(lang) else "You don't have a Captain to equip.")
             
             ok = await inventory_repo.remove_inventory(conn, guild_id, user_id, item_id, 1)
             if not ok:
                 return False, ("Bạn không có item này trong túi." if _is_vi(lang) else "You don't have this item in inventory.")
 
-            current = await player_repo.get_equipped_items(conn, guild_id, user_id)
+            current_specific = await player_repo.get_equipped_items(
+                conn,
+                guild_id,
+                user_id,
+                character_id=target_cid,
+                fallback_legacy=False,
+            )
+            current = await player_repo.get_equipped_items(
+                conn,
+                guild_id,
+                user_id,
+                character_id=target_cid,
+                fallback_legacy=bool(character_id is None and target_cid),
+            )
             old_item = current.get(slot)
             if old_item:
                 await inventory_repo.add_inventory(conn, guild_id, user_id, old_item, 1)
+                if slot not in current_specific:
+                    await conn.execute(
+                        "DELETE FROM equipment WHERE guild_id = ? AND user_id = ? AND slot = ?",
+                        (guild_id, user_id, slot),
+                    )
 
-            await player_repo.equip_item(conn, guild_id, user_id, slot, item_id)
+            await player_repo.equip_item(conn, guild_id, user_id, slot, item_id, character_id=target_cid)
             await conn.commit()
 
-        return True, slot
+        return True, f"{slot}|{target_cid}"
 
     @staticmethod
-    async def unequip_item(guild_id: int, user_id: int, slot: str, lang: str = "en") -> tuple[bool, str]:
+    async def unequip_item(
+        guild_id: int,
+        user_id: int,
+        slot: str,
+        lang: str = "en",
+        character_id: str | None = None,
+    ) -> tuple[bool, str]:
         slot = slot.strip().lower()
         if slot not in SLOTS:
             return False, ("Slot phải là weapon/armor/accessory." if _is_vi(lang) else "Slot must be weapon/armor/accessory.")
 
         async with BaseService.with_user_transaction(guild_id, user_id, "unequip") as conn:
             await player_repo.ensure_player_ready(conn, guild_id, user_id)
+
+            ok_target, target_cid, reason = await PlayerService._resolve_target_character_id(conn, guild_id, user_id, character_id)
+            if not ok_target:
+                if reason == "character_not_owned":
+                    return False, ("Bạn không sở hữu hero này." if _is_vi(lang) else "You don't own this hero.")
+                return False, ("Bạn chưa có Captain để tháo trang bị." if _is_vi(lang) else "You don't have a Captain to unequip.")
             
-            old_item = await player_repo.unequip_item(conn, guild_id, user_id, slot)
+            old_item = await player_repo.unequip_item(
+                conn,
+                guild_id,
+                user_id,
+                slot,
+                character_id=target_cid,
+                fallback_legacy=bool(character_id is None and target_cid),
+            )
             if not old_item:
                 return False, ("Slot này chưa có trang bị." if _is_vi(lang) else "This slot has no equipment.")
 
@@ -170,17 +248,26 @@ class PlayerService(BaseService):
 
             await conn.commit()
 
-        return True, old_item
+        return True, f"{old_item}|{target_cid}"
 
     @staticmethod
-    async def get_equipment(guild_id: int, user_id: int) -> EquipmentResult:
+    async def get_equipment(guild_id: int, user_id: int, character_id: str | None = None) -> EquipmentResult:
         async with BaseService.with_user_transaction(guild_id, user_id, "get_equipment") as conn:
             await player_repo.ensure_player_ready(conn, guild_id, user_id)
             
             from ..combat.equipment import equipped_profile
             from ..combat.skills import skill_profile
             
-            profile = await equipped_profile(conn, guild_id, user_id)
+            ok_target, target_cid, reason = await PlayerService._resolve_target_character_id(conn, guild_id, user_id, character_id)
+            if character_id and not ok_target and reason == "character_not_owned":
+                return EquipmentResult(ok=False)
+            profile = await equipped_profile(
+                conn,
+                guild_id,
+                user_id,
+                character_id=target_cid if ok_target else None,
+                fallback_legacy=bool(ok_target),
+            )
             sprofile = await skill_profile(conn, guild_id, user_id)
             await conn.commit()
 

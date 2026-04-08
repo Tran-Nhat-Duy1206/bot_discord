@@ -112,7 +112,24 @@ async def get_player_level_and_created(
     return int(row[0]), int(row[1])
 
 
-async def get_equipped_items(conn: aiosqlite.Connection, guild_id: int, user_id: int) -> dict[str, str]:
+async def get_equipped_items(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_id: int,
+    character_id: str | None = None,
+    fallback_legacy: bool = False,
+) -> dict[str, str]:
+    cid = str(character_id or "").strip()
+    if cid:
+        async with conn.execute(
+            "SELECT slot, item_id FROM character_equipment WHERE guild_id = ? AND user_id = ? AND character_id = ?",
+            (guild_id, user_id, cid),
+        ) as cur:
+            rows = await cur.fetchall()
+        result = {str(slot): str(item_id) for slot, item_id in rows}
+        if not fallback_legacy:
+            return result
+
     cached = await EQUIPPED_CACHE.get(guild_id, user_id)
     if cached is not None:
         return cached
@@ -122,25 +139,72 @@ async def get_equipped_items(conn: aiosqlite.Connection, guild_id: int, user_id:
         (guild_id, user_id),
     ) as cur:
         rows = await cur.fetchall()
-    result = {str(slot): str(item_id) for slot, item_id in rows}
-    await EQUIPPED_CACHE.set(result, guild_id, user_id)
-    return result
+    legacy = {str(slot): str(item_id) for slot, item_id in rows}
+    await EQUIPPED_CACHE.set(legacy, guild_id, user_id)
+    if cid and fallback_legacy:
+        legacy.update(result)
+        return legacy
+    return legacy
 
 
-async def equip_item(conn: aiosqlite.Connection, guild_id: int, user_id: int, slot: str, item_id: str) -> None:
-    await conn.execute(
-        """
-        INSERT INTO equipment(guild_id, user_id, slot, item_id)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(guild_id, user_id, slot)
-        DO UPDATE SET item_id = excluded.item_id
-        """,
-        (guild_id, user_id, slot, item_id),
-    )
+async def equip_item(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_id: int,
+    slot: str,
+    item_id: str,
+    character_id: str | None = None,
+) -> None:
+    cid = str(character_id or "").strip()
+    if cid:
+        await conn.execute(
+            """
+            INSERT INTO character_equipment(guild_id, user_id, character_id, slot, item_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id, character_id, slot)
+            DO UPDATE SET item_id = excluded.item_id
+            """,
+            (guild_id, user_id, cid, slot, item_id),
+        )
+    else:
+        await conn.execute(
+            """
+            INSERT INTO equipment(guild_id, user_id, slot, item_id)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id, slot)
+            DO UPDATE SET item_id = excluded.item_id
+            """,
+            (guild_id, user_id, slot, item_id),
+        )
     await invalidate_equipped(guild_id, user_id)
 
 
-async def unequip_item(conn: aiosqlite.Connection, guild_id: int, user_id: int, slot: str) -> Optional[str]:
+async def unequip_item(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_id: int,
+    slot: str,
+    character_id: str | None = None,
+    fallback_legacy: bool = False,
+) -> Optional[str]:
+    cid = str(character_id or "").strip()
+    if cid:
+        async with conn.execute(
+            "SELECT item_id FROM character_equipment WHERE guild_id = ? AND user_id = ? AND character_id = ? AND slot = ?",
+            (guild_id, user_id, cid, slot),
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            item_id = str(row[0])
+            await conn.execute(
+                "DELETE FROM character_equipment WHERE guild_id = ? AND user_id = ? AND character_id = ? AND slot = ?",
+                (guild_id, user_id, cid, slot),
+            )
+            await invalidate_equipped(guild_id, user_id)
+            return item_id
+        if not fallback_legacy:
+            return None
+
     async with conn.execute(
         "SELECT item_id FROM equipment WHERE guild_id = ? AND user_id = ? AND slot = ?",
         (guild_id, user_id, slot),

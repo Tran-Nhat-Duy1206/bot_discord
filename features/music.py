@@ -78,6 +78,7 @@ MUSIC_RATE_LIMIT_BYPASS_DJ = os.getenv("MUSIC_RATE_LIMIT_BYPASS_DJ", "1").strip(
     "on",
 }
 MUSIC_REDIS_URL = os.getenv("MUSIC_REDIS_URL", "")
+MUSIC_YOUTUBE_PLAYLIST_LIMIT = int(os.getenv("MUSIC_YOUTUBE_PLAYLIST_LIMIT", "10"))
 MUSIC_REDIS_PREFIX = os.getenv("MUSIC_REDIS_PREFIX", "music")
 MUSIC_RESOLVE_CACHE_TTL_SEC = int(os.getenv("MUSIC_RESOLVE_CACHE_TTL_SEC", "1800"))
 MUSIC_SPOTIFY_CACHE_TTL_SEC = int(os.getenv("MUSIC_SPOTIFY_CACHE_TTL_SEC", "21600"))
@@ -344,21 +345,42 @@ def _cache_compact_local():
             _MUSIC_SPOTIFY_CACHE_LOCAL.pop(key, None)
 
 
+def ensure_valid_payload(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    out = dict(payload)
+    ts = out.get("timestamp")
+    if isinstance(ts, bool):
+        ts = None
+    if isinstance(ts, int):
+        out["timestamp"] = ts
+    else:
+        try:
+            out["timestamp"] = int(float(ts))
+        except Exception:
+            out["timestamp"] = int(time.time() * 1000)
+    return out
+
+
 def _track_payload_from_playable(playable: Any) -> dict[str, Any] | None:
     try:
         raw = getattr(playable, "raw_data", None)
         if isinstance(raw, dict) and raw:
-            return raw
+            return ensure_valid_payload(raw)
     except Exception:
         return None
     return None
 
 
 def _playable_from_payload(payload: Any):
-    if wavelink is None or not isinstance(payload, dict):
+    if wavelink is None:
+        return None
+    valid_payload = ensure_valid_payload(payload)
+    if valid_payload is None:
         return None
     try:
-        return wavelink.Playable(payload)
+        return wavelink.Playable(valid_payload)
     except Exception:
         return None
 
@@ -381,7 +403,8 @@ def _queue_track_to_payload(track: QueueTrack) -> dict[str, Any] | None:
 def _queue_track_from_payload(data: Any) -> QueueTrack | None:
     if not isinstance(data, dict):
         return None
-    playable = _playable_from_payload(data.get("raw"))
+    raw = ensure_valid_payload(data.get("raw"))
+    playable = _playable_from_payload(raw)
     if playable is None:
         return None
     return QueueTrack(
@@ -506,6 +529,91 @@ def _spotify_oembed_title(url: str) -> str | None:
     except Exception:
         return None
     return None
+
+
+def _youtube_playlist_limit() -> int:
+    return max(1, min(100, int(MUSIC_YOUTUBE_PLAYLIST_LIMIT or 10)))
+
+
+def _is_youtube_playlist_url(url: str) -> bool:
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    try:
+        p = urllib.parse.urlparse(raw)
+    except Exception:
+        return False
+
+    host = (p.netloc or "").lower()
+    if not host:
+        return False
+    if not any(x in host for x in ("youtube.com", "youtu.be")):
+        return False
+
+    q = urllib.parse.parse_qs(p.query or "")
+    list_values = q.get("list") or []
+    list_id = next((str(v).strip() for v in list_values if str(v).strip()), "")
+    if not list_id:
+        return False
+
+    path = (p.path or "").lower()
+    if path.startswith("/playlist") or path.startswith("/watch") or path.startswith("/live"):
+        return True
+    if host.endswith("youtu.be"):
+        return True
+    return False
+
+
+def _extract_playables_from_result(result: Any) -> list[Any]:
+    if not result:
+        return []
+    if isinstance(result, list):
+        return [x for x in result if x is not None]
+
+    tracks = getattr(result, "tracks", None)
+    if isinstance(tracks, list):
+        return [x for x in tracks if x is not None]
+
+    try:
+        first = result[0]
+    except Exception:
+        first = None
+    if first is not None:
+        return [first]
+
+    try:
+        return [x for x in result if x is not None]
+    except Exception:
+        return []
+
+
+async def _resolve_youtube_playlist(url: str, requester_name: str, limit: int = 10) -> list[QueueTrack]:
+    if wavelink is None:
+        return []
+
+    query = (url or "").strip()
+    if not _is_youtube_playlist_url(query):
+        return []
+
+    max_tracks = max(1, min(100, int(limit or 10)))
+
+    try:
+        result = await wavelink.Playable.search(query)
+    except Exception:
+        return []
+
+    playables = _extract_playables_from_result(result)
+    if not playables:
+        return []
+
+    origin = _normalize_spotify_url(url)
+    tracks: list[QueueTrack] = []
+    for p in playables[:max_tracks]:
+        try:
+            tracks.append(_track_from_playable(p, requester_name, origin))
+        except Exception:
+            continue
+    return tracks
 
 
 def _spotify_api_token() -> str | None:
@@ -663,17 +771,22 @@ async def _wavelink_search_first(query: str):
 
     local = _MUSIC_RESOLVE_CACHE.get(cache_key)
     if local and time.time() < local[0]:
-        MUSIC_METRICS.resolve_cache_hits += 1
-        p = _playable_from_payload(local[1])
+        local_payload = ensure_valid_payload(local[1])
+        p = _playable_from_payload(local_payload)
         if p is not None:
+            MUSIC_METRICS.resolve_cache_hits += 1
+            _MUSIC_RESOLVE_CACHE[cache_key] = (local[0], local_payload)
             return p
 
     redis_hit = await _redis_get_json("resolve", cache_key)
     if isinstance(redis_hit, dict):
-        p = _playable_from_payload(redis_hit)
+        redis_payload = ensure_valid_payload(redis_hit)
+        p = _playable_from_payload(redis_payload)
         if p is not None:
             MUSIC_METRICS.resolve_cache_hits += 1
-            _MUSIC_RESOLVE_CACHE[cache_key] = (time.time() + max(1, MUSIC_RESOLVE_CACHE_TTL_SEC), redis_hit)
+            ttl = max(1, MUSIC_RESOLVE_CACHE_TTL_SEC)
+            _MUSIC_RESOLVE_CACHE[cache_key] = (time.time() + ttl, redis_payload)
+            await _redis_set_json("resolve", cache_key, redis_payload, ttl)
             return p
 
     MUSIC_METRICS.resolve_cache_misses += 1
@@ -738,6 +851,14 @@ def _track_from_playable(playable: Any, requester_name: str, origin_url: str = "
 
 async def _resolve_non_spotify(query: str, requester_name: str) -> list[QueueTrack]:
     q = query
+    origin = _normalize_spotify_url(query)
+
+    if _is_youtube_playlist_url(q):
+        limit = _youtube_playlist_limit()
+        playlist_tracks = await _resolve_youtube_playlist(q, requester_name, limit=limit)
+        if playlist_tracks:
+            return playlist_tracks
+
     if _is_spotify_url(q) and _spotify_kind(q) == "track":
         title = _spotify_oembed_title(q) or q
         q = f"ytsearch:{title}"
@@ -745,7 +866,7 @@ async def _resolve_non_spotify(query: str, requester_name: str) -> list[QueueTra
     playable = await _wavelink_search_first(q)
     if playable is None:
         return []
-    return [_track_from_playable(playable, requester_name, _normalize_spotify_url(query))]
+    return [_track_from_playable(playable, requester_name, origin)]
 
 
 async def _resolve_spotify_titles_fast(titles: list[str], requester_name: str, origin_url: str) -> tuple[list[QueueTrack], list[str]]:
@@ -1201,6 +1322,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         st = _state(interaction.guild.id)
         norm = _normalize_spotify_url(query)
         is_collection = _is_spotify_url(norm) and _spotify_kind(norm) in {"playlist", "album"}
+        is_youtube_collection = _is_youtube_playlist_url(norm)
         resolve_started = time.perf_counter()
 
         try:
@@ -1267,6 +1389,9 @@ def setup(bot: commands.Bot, guilds: list = None):
             e.add_field(name="Yêu cầu bởi", value=interaction.user.display_name, inline=True)
             if _is_spotify_url(norm):
                 e.add_field(name="Spotify", value=norm, inline=False)
+            elif is_youtube_collection:
+                e.add_field(name="YouTube Playlist", value=norm, inline=False)
+                e.add_field(name="Giới hạn tải", value=f"Đang lấy tối đa **{_youtube_playlist_limit()}** bài", inline=False)
 
         if pending:
             if st.background_loader_task and not st.background_loader_task.done():

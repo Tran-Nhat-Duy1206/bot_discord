@@ -67,8 +67,14 @@ def _resolve_set_bonus(equipped: dict[str, str]) -> dict | None:
     return None
 
 
-async def equipped_profile(conn, guild_id: int, user_id: int) -> dict:
-    equipped = await get_equipped(conn, guild_id, user_id)
+async def equipped_profile(
+    conn,
+    guild_id: int,
+    user_id: int,
+    character_id: str | None = None,
+    fallback_legacy: bool = False,
+) -> dict:
+    equipped = await get_equipped(conn, guild_id, user_id, character_id=character_id, fallback_legacy=fallback_legacy)
     atk = 0
     defense = 0
     hp = 0
@@ -107,8 +113,14 @@ async def equipped_profile(conn, guild_id: int, user_id: int) -> dict:
     }
 
 
-async def equipped_bonus(conn, guild_id: int, user_id: int) -> tuple[int, int, int, dict[str, str]]:
-    profile = await equipped_profile(conn, guild_id, user_id)
+async def equipped_bonus(
+    conn,
+    guild_id: int,
+    user_id: int,
+    character_id: str | None = None,
+    fallback_legacy: bool = False,
+) -> tuple[int, int, int, dict[str, str]]:
+    profile = await equipped_profile(conn, guild_id, user_id, character_id=character_id, fallback_legacy=fallback_legacy)
     return int(profile["attack"]), int(profile["defense"]), int(profile["hp"]), dict(profile["equipped"])
 
 

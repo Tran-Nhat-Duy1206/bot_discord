@@ -112,28 +112,6 @@ class BossResult:
 
 
 @dataclass
-class DungeonResult:
-    ok: bool = False
-    cleared: bool = False
-    floors_cleared: int = 0
-    total_floors: int = 0
-    gold: int = 0
-    xp: int = 0
-    drops: dict = field(default_factory=dict)
-    hp: int = 0
-    level: int = 1
-    xp_remain: int = 0
-    leveled_up: bool = False
-    logs: list = field(default_factory=list)
-    combat_effects: CombatEffects = field(default_factory=CombatEffects)
-    set_bonus: str = ""
-    passive_skills: list = field(default_factory=list)
-    lifesteal_heal: int = 0
-    damage_blocked: int = 0
-    weekly_event: dict = field(default_factory=dict)
-
-
-@dataclass
 class PartyHuntResult:
     ok: bool = False
     pack: int = 0

@@ -131,6 +131,136 @@ async def _db_init():
         )
         await conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS dungeon_runs (
+                run_id TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                difficulty TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                floor INTEGER NOT NULL DEFAULT 1,
+                total_floors INTEGER NOT NULL DEFAULT 12,
+                act INTEGER NOT NULL DEFAULT 1,
+                score INTEGER NOT NULL DEFAULT 0,
+                risk_score INTEGER NOT NULL DEFAULT 0,
+                supply INTEGER NOT NULL DEFAULT 0,
+                fatigue INTEGER NOT NULL DEFAULT 0,
+                corruption INTEGER NOT NULL DEFAULT 0,
+                revive_tokens INTEGER NOT NULL DEFAULT 0,
+                seed INTEGER NOT NULL DEFAULT 0,
+                weekly_seed INTEGER NOT NULL DEFAULT 0,
+                current_node_id TEXT NOT NULL DEFAULT '',
+                pending_choice_json TEXT NOT NULL DEFAULT '{}',
+                pending_rewards_json TEXT NOT NULL DEFAULT '{}',
+                final_rewards_json TEXT NOT NULL DEFAULT '{}',
+                version INTEGER NOT NULL DEFAULT 0,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                ended_at INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dungeon_run_units (
+                run_id TEXT NOT NULL,
+                character_id TEXT NOT NULL,
+                slot INTEGER NOT NULL,
+                lane TEXT NOT NULL,
+                role TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                star INTEGER NOT NULL,
+                max_hp INTEGER NOT NULL,
+                hp INTEGER NOT NULL,
+                attack INTEGER NOT NULL,
+                defense INTEGER NOT NULL,
+                speed INTEGER NOT NULL,
+                alive INTEGER NOT NULL DEFAULT 1,
+                buffs_json TEXT NOT NULL DEFAULT '[]',
+                debuffs_json TEXT NOT NULL DEFAULT '[]',
+                PRIMARY KEY(run_id, character_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dungeon_run_modifiers (
+                run_id TEXT NOT NULL,
+                mod_id TEXT NOT NULL,
+                mod_type TEXT NOT NULL,
+                stack INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT '',
+                data_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id, mod_id, mod_type, source)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dungeon_run_nodes (
+                run_id TEXT NOT NULL,
+                floor INTEGER NOT NULL,
+                node_id TEXT NOT NULL,
+                node_type TEXT NOT NULL,
+                danger INTEGER NOT NULL DEFAULT 1,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                selected INTEGER NOT NULL DEFAULT 0,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(run_id, node_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dungeon_run_events (
+                run_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(run_id, seq)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dungeon_weekly_rank (
+                week_key TEXT NOT NULL,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                rank_points INTEGER NOT NULL DEFAULT 0,
+                best_score INTEGER NOT NULL DEFAULT 0,
+                runs_count INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(week_key, guild_id, user_id)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dungeon_weekly_state (
+                week_key TEXT PRIMARY KEY,
+                seed INTEGER NOT NULL,
+                boss_family TEXT NOT NULL,
+                global_modifiers_json TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS character_equipment (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                character_id TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                PRIMARY KEY(guild_id, user_id, character_id, slot)
+            )
+            """
+        )
+        await conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS monsters_killed (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -365,6 +495,24 @@ async def _db_init():
         )
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_teams_user ON teams(guild_id, user_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dungeon_runs_user_phase ON dungeon_runs(guild_id, user_id, phase, updated_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dungeon_run_units_run ON dungeon_run_units(run_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dungeon_mod_run_type ON dungeon_run_modifiers(run_id, mod_type)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dungeon_nodes_floor ON dungeon_run_nodes(run_id, floor)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dungeon_weekly_rank_top ON dungeon_weekly_rank(week_key, guild_id, rank_points DESC, best_score DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_character_equipment_user ON character_equipment(guild_id, user_id, character_id)"
         )
         await conn.commit()
 
@@ -605,13 +753,34 @@ async def gain_xp_and_level(conn: aiosqlite.Connection, guild_id: int, user_id: 
     return level, xp, up
 
 
-async def get_equipped(conn: aiosqlite.Connection, guild_id: int, user_id: int) -> dict[str, str]:
+async def get_equipped(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_id: int,
+    character_id: str | None = None,
+    fallback_legacy: bool = False,
+) -> dict[str, str]:
+    cid = str(character_id or "").strip()
+    if cid:
+        async with conn.execute(
+            "SELECT slot, item_id FROM character_equipment WHERE guild_id = ? AND user_id = ? AND character_id = ?",
+            (guild_id, user_id, cid),
+        ) as cur:
+            rows = await cur.fetchall()
+        result = {str(slot): str(item_id) for slot, item_id in rows}
+        if not fallback_legacy:
+            return result
+
     async with conn.execute(
         "SELECT slot, item_id FROM equipment WHERE guild_id = ? AND user_id = ?",
         (guild_id, user_id),
     ) as cur:
         rows = await cur.fetchall()
-    return {str(slot): str(item_id) for slot, item_id in rows}
+    legacy = {str(slot): str(item_id) for slot, item_id in rows}
+    if cid and fallback_legacy:
+        legacy.update(result)
+        return legacy
+    return legacy
 
 
 async def get_unlocked_skills(conn: aiosqlite.Connection, guild_id: int, user_id: int) -> set[str]:

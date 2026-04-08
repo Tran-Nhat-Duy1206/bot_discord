@@ -13,9 +13,7 @@ from dotenv import load_dotenv
 from language import (
     CMD_I18N,
     ensure_lang_db_ready,
-    help_content,
     resolve_lang,
-    rpg_help_content,
     save_lang,
     tr,
 )
@@ -89,7 +87,7 @@ fun.setup(bot, GUILDS)
 
 @bot.event
 async def on_ready():
-    await bot.change_presence(activity=discord.Game(name="/help_rpg | /help"))
+    await bot.change_presence(activity=discord.Game(name="/rpg_start | /status"))
     global _TRANSLATOR_SET
     try:
         if not _TRANSLATOR_SET:
@@ -244,30 +242,6 @@ async def nuke(interaction: discord.Interaction):
         view=NukeConfirmView(interaction.user.id, lang),
         ephemeral=True
     )
-
-
-@bot.tree.command(name="help", description=app_commands.locale_str("cmd.help.desc"))
-async def help_cmd(interaction: discord.Interaction):
-    lang = await resolve_lang(interaction)
-    payload = help_content(lang)
-    e = discord.Embed(title=str(payload.get("title", "📚 Help")), color=discord.Color.blurple())
-    for field_name, field_value in payload.get("fields", []):
-        e.add_field(name=str(field_name), value=str(field_value), inline=False)
-    await interaction.response.send_message(embed=e, ephemeral=True)
-
-
-@bot.tree.command(name="help_rpg", description=app_commands.locale_str("cmd.help_rpg.desc"))
-async def help_rpg_cmd(interaction: discord.Interaction):
-    lang = await resolve_lang(interaction)
-    payload = rpg_help_content(lang)
-    e = discord.Embed(
-        title=str(payload.get("title", "🐉 RPG Help (Team-Based)")),
-        description=str(payload.get("description", "")),
-        color=discord.Color.orange(),
-    )
-    for field_name, field_value in payload.get("fields", []):
-        e.add_field(name=str(field_name), value=str(field_value), inline=False)
-    await interaction.response.send_message(embed=e, ephemeral=True)
 
 
 @bot.tree.error

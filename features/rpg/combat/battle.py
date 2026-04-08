@@ -6,6 +6,13 @@ from ..data.data import RPG_DAMAGE_VAR_MIN, RPG_DAMAGE_VAR_MAX, RPG_CRIT_CHANCE,
 from ..data.characters import PASSIVE_SKILLS, ROLE_SYNERGY
 
 
+def normalize_role(role: str) -> str:
+    r = str(role or "").strip().lower()
+    if r in {"sp", "support"}:
+        return "support"
+    return r
+
+
 def roll_damage(atk: int, defense: int, crit_bonus: float = 0.0) -> tuple[int, bool]:
     base_damage = atk * (100 / (100 + max(0, defense))) + random.randint(RPG_DAMAGE_VAR_MIN, RPG_DAMAGE_VAR_MAX)
     damage = max(1, int(base_damage))
@@ -99,10 +106,7 @@ class TeamMember:
                  level: int = 1, star: int = 1, passive_skill: str = ""):
         self.char_id = char_id
         self.name = name
-        normalized_role = str(role or "").lower()
-        if normalized_role == "sp":
-            normalized_role = "support"
-        self.role = normalized_role
+        self.role = normalize_role(role)
         self.max_hp = int(hp * (1 + (level - 1) * 0.1) * (1 + (star - 1) * 0.2))
         self.current_hp = self.max_hp
         self.atk = int(atk * (1 + (level - 1) * 0.1) * (1 + (star - 1) * 0.2))

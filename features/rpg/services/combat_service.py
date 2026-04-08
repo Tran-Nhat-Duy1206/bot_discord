@@ -8,7 +8,7 @@ from ..data import (
     RPG_SLIME_BONUS_GOLD, RPG_SLIME_BONUS_XP,
     RPG_SLIME_JACKPOT_CHANCE, RPG_SLIME_JACKPOT_MIN, RPG_SLIME_JACKPOT_MAX,
     RPG_DEATH_HP_PERCENT, RPG_DAMAGE_REDUCTION_CAP, RPG_LIFESTEAL_HEAL_CAP,
-    RPG_HUNT_COOLDOWN, RPG_BOSS_COOLDOWN, RPG_DUNGEON_COOLDOWN,
+    RPG_HUNT_COOLDOWN, RPG_BOSS_COOLDOWN,
 )
 from ..combat.battle import run_battle_turns
 from ..combat.battle import run_team_battle
@@ -83,28 +83,6 @@ class BossResult:
 
 
 @dataclass
-class DungeonResult:
-    ok: bool = False
-    cleared: bool = False
-    floors_cleared: int = 0
-    total_floors: int = 0
-    gold: int = 0
-    xp: int = 0
-    drops: dict = field(default_factory=dict)
-    hp: int = 0
-    level: int = 1
-    xp_remain: int = 0
-    leveled_up: bool = False
-    logs: list = field(default_factory=list)
-    combat_effects: CombatEffects = field(default_factory=CombatEffects)
-    set_bonus: str = ""
-    passive_skills: list = field(default_factory=list)
-    lifesteal_heal: int = 0
-    damage_blocked: int = 0
-    weekly_event: dict = field(default_factory=dict)
-
-
-@dataclass
 class PartyHuntResult:
     ok: bool = False
     pack: int = 0
@@ -124,18 +102,22 @@ def _is_vi(lang: str) -> bool:
 class CombatService(BaseService):
     @staticmethod
     async def _load_team_members(conn, guild_id: int, user_id: int) -> list[dict]:
+        from ..combat.equipment import equipped_profile
+
         main = await get_main_character(conn, guild_id, user_id)
         if not main:
             return []
 
+        main_cid = str(main[1])
+        main_eq = await equipped_profile(conn, guild_id, user_id, character_id=main_cid, fallback_legacy=True)
         members: list[dict] = [
             {
-                "character_id": str(main[1]),
+                "character_id": main_cid,
                 "name": str(main[7]),
                 "role": str(main[9]),
-                "hp": int(main[10]),
-                "attack": int(main[11]),
-                "defense": int(main[12]),
+                "hp": int(main[10]) + int(main_eq.get("hp", 0)),
+                "attack": int(main[11]) + int(main_eq.get("attack", 0)),
+                "defense": int(main[12]) + int(main_eq.get("defense", 0)),
                 "speed": int(main[13]),
                 "level": int(main[3]),
                 "star": int(main[5]),
@@ -149,14 +131,15 @@ class CombatService(BaseService):
             cid = str(row[1])
             if cid in used:
                 continue
+            eq = await equipped_profile(conn, guild_id, user_id, character_id=cid, fallback_legacy=False)
             members.append(
                 {
                     "character_id": cid,
                     "name": str(row[2]),
                     "role": str(row[4]),
-                    "hp": int(row[5]),
-                    "attack": int(row[6]),
-                    "defense": int(row[7]),
+                    "hp": int(row[5]) + int(eq.get("hp", 0)),
+                    "attack": int(row[6]) + int(eq.get("attack", 0)),
+                    "defense": int(row[7]) + int(eq.get("defense", 0)),
                     "speed": int(row[8]),
                     "level": int(row[10]),
                     "star": int(row[11]),
@@ -807,235 +790,6 @@ class CombatService(BaseService):
             "lifesteal_heal": total_lifesteal_heal, "damage_blocked": total_damage_blocked,
             "damage_dealt": total_damage_dealt, "damage_taken": total_damage_taken,
         }
-
-    @staticmethod
-    async def dungeon(guild_id: int, user_id: int, lang: str = "en") -> DungeonResult:
-        async with BaseService.with_user_transaction(guild_id, user_id, "dungeon") as conn:
-            await player_repo.ensure_player_ready(conn, guild_id, user_id)
-            
-            from ..db.db import cooldown_remain
-            remain = await cooldown_remain(conn, guild_id, user_id, "dungeon")
-            if remain > 0:
-                return DungeonResult()
-
-            team = await CombatService._load_team_members(conn, guild_id, user_id)
-            if not team:
-                return DungeonResult()
-
-            player_row = await player_repo.get_player_stats(conn, guild_id, user_id)
-            if not player_row:
-                return DungeonResult()
-            level = int(player_row[0])
-
-            team_power = CombatService._team_power(team)
-            has_healer = any(str(m.get("role", "")).lower() == "healer" for m in team)
-            floors = random.randint(3, 6)
-            cleared = 0
-            total_gold = 0
-            total_xp = 0
-            drops: dict[str, int] = {}
-            logs: list[str] = []
-
-            for floor in range(1, floors + 1):
-                is_boss_floor = floor == floors
-                enemy = random.choice(BOSS_VARIANTS if is_boss_floor else MONSTERS)
-                floor_mult = 0.95 + floor * 0.14
-                battle = run_team_battle(
-                    team,
-                    int(enemy["hp"] * floor_mult * (1.0 + min(1.0, team_power / 1600.0))),
-                    int(enemy["atk"] * floor_mult),
-                    int(enemy["def"] * (1.0 + floor * 0.08)),
-                )
-                if not battle.get("win", False):
-                    logs.append(
-                        f"Tầng {floor}: thua trước {enemy['name']}."
-                        if _is_vi(lang)
-                        else f"Floor {floor}: defeated by {enemy['name']}."
-                    )
-                    break
-
-                cleared += 1
-                reward_mult = floor_mult * (0.95 + min(0.45, team_power / 3000.0))
-                g, x = roll_gold_xp(enemy, reward_mult=reward_mult)
-                total_gold += g
-                total_xp += x
-                rolled = roll_drops(enemy, drop_mult=1.0 + floor * 0.05)
-                for item_id, amount in rolled.items():
-                    drops[item_id] = drops.get(item_id, 0) + amount
-                logs.append(
-                    f"Tầng {floor}: hạ {enemy['name']} (+{g} Slime Coin, +{x} xp)"
-                    if _is_vi(lang)
-                    else f"Floor {floor}: defeated {enemy['name']} (+{g} Slime Coin, +{x} xp)"
-                )
-
-            if total_gold > 0:
-                await player_repo.add_gold(conn, guild_id, user_id, total_gold)
-                await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "dungeon_reward")
-            if drops:
-                await batch_add_inventory(conn, guild_id, user_id, drops)
-            if cleared == floors and floors > 0:
-                await quest_repo.add_quest_progress(conn, guild_id, user_id, "team_dungeon_clears", 1)
-            if has_healer and cleared > 0:
-                await quest_repo.add_quest_progress(conn, guild_id, user_id, "use_healer_battles", 1)
-            new_level, remain_xp, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, user_id, total_xp)
-            await telemetry_repo.record_combat_telemetry(
-                conn,
-                guild_id,
-                "dungeon",
-                level,
-                cleared == floors,
-                gold=total_gold,
-                xp=total_xp,
-                turns=max(1, len(logs)),
-                damage_dealt=0,
-                damage_taken=0,
-                drop_qty=sum(int(v) for v in drops.values()),
-            )
-
-            result = DungeonResult(
-                ok=True,
-                cleared=cleared == floors,
-                floors_cleared=cleared,
-                total_floors=floors,
-                gold=total_gold,
-                xp=total_xp,
-                drops=drops,
-                hp=int(player_row[2]),
-                level=new_level,
-                xp_remain=remain_xp,
-                leveled_up=leveled_up,
-                logs=logs,
-            )
-            
-            await telemetry_repo.set_cooldown(conn, guild_id, user_id, "dungeon", RPG_DUNGEON_COOLDOWN)
-            await conn.commit()
-            
-            return result
-
-    @staticmethod
-    async def _simulate_dungeon(conn, guild_id: int, user_id: int) -> DungeonResult:
-        row = await player_repo.get_player_stats(conn, guild_id, user_id)
-        if not row:
-            return DungeonResult()
-
-        level, xp, hp, max_hp, attack, defense, gold = map(int, row)
-        event = current_weekly_event()
-        
-        from ..combat.equipment import equipped_profile
-        from ..combat.skills import skill_profile
-        
-        eprofile = await equipped_profile(conn, guild_id, user_id)
-        sprofile = await skill_profile(conn, guild_id, user_id)
-
-        eq_atk = int(eprofile["attack"])
-        eq_def = int(eprofile["defense"])
-        eq_hp = int(eprofile["hp"])
-        sk_atk = int(sprofile["attack"])
-        sk_def = int(sprofile["defense"])
-        sk_hp = int(sprofile["hp"])
-
-        effective_attack = attack + eq_atk + sk_atk
-        effective_defense = defense + eq_def + sk_def
-        effective_max_hp = max_hp + eq_hp + sk_hp
-        bonus_hp_total = eq_hp + sk_hp
-        player_hp = min(effective_max_hp, hp + bonus_hp_total)
-
-        lifesteal = float(eprofile["lifesteal"]) + float(sprofile["lifesteal"])
-        crit_bonus = float(eprofile["crit_bonus"]) + float(sprofile["crit_bonus"])
-        damage_reduction = float(eprofile["damage_reduction"]) + float(sprofile["damage_reduction"])
-
-        total_floors = random.randint(3, 6)
-        floors_cleared = 0
-        total_gold = 0
-        total_xp = 0
-        total_lifesteal_heal = 0
-        total_damage_blocked = 0
-        total_turns = 0
-        total_damage_dealt = 0
-        total_damage_taken = 0
-        drops: dict[str, int] = {}
-        logs: list[str] = []
-
-        for floor in range(1, total_floors + 1):
-            if floor == total_floors:
-                candidates = [b for b in BOSS_VARIANTS if int(b.get("min_level", 1)) <= level]
-                enemy = (candidates[-1] if candidates else BOSS_VARIANTS[0]).copy()
-                enemy_name = f"{enemy['name']} (Dungeon Boss)"
-                enemy_hp = int(enemy["hp"]) + level * 8 + floor * 40
-                enemy_atk = int(enemy["atk"]) + level // 3 + floor * 2
-                enemy_def = int(enemy["def"]) + level // 6 + floor
-                reward_src = {"gold": enemy["gold"], "xp": enemy["xp"], "drops": enemy.get("drops", [])}
-            else:
-                enemy = pick_monster().copy()
-                enemy_name = str(enemy["name"])
-                enemy_hp = int(enemy["hp"]) + level * 2 + floor * 12
-                enemy_atk = int(enemy["atk"]) + floor
-                enemy_def = int(enemy["def"]) + floor // 2
-                reward_src = enemy
-
-            battle = run_battle_turns(
-                player_hp=player_hp, player_atk=effective_attack, player_def=effective_defense,
-                monster_hp=enemy_hp, monster_atk=enemy_atk, monster_def=enemy_def,
-                monster_escape_turn=None, player_max_hp=effective_max_hp,
-                player_lifesteal=lifesteal, player_crit_bonus=crit_bonus, player_damage_reduction=damage_reduction,
-            )
-
-            player_hp = int(battle["player_hp"])
-            total_lifesteal_heal += int(battle.get("lifesteal_heal", 0))
-            total_damage_blocked += int(battle.get("damage_blocked", 0))
-            total_turns += int(battle.get("turns", 0))
-            total_damage_dealt += int(battle.get("damage_dealt", 0))
-            total_damage_taken += int(battle.get("damage_taken", 0))
-
-            if player_hp <= 0 or int(battle["monster_hp"]) > 0:
-                logs.append(f"Tầng {floor}: thua trước {enemy_name}")
-                break
-
-            floors_cleared += 1
-            reward_mult = min(2.5, 1.0 + floor * 0.15)
-            reward_mult *= float(event.get("boss_reward_mult", 1.0)) if floor == total_floors else 1.0
-            g, x = roll_gold_xp(reward_src, reward_mult=reward_mult)
-            total_gold += g
-            total_xp += x
-
-            drop_mult = (1.0 + floor * 0.1) * float(
-                event.get("boss_drop_mult", 1.0) if floor == total_floors else event.get("hunt_drop_mult", 1.0)
-            )
-            rolled = roll_drops(reward_src, drop_mult=drop_mult)
-            for item_id, amount in rolled.items():
-                drops[item_id] = drops.get(item_id, 0) + amount
-        
-        if drops:
-            await batch_add_inventory(conn, guild_id, user_id, drops)
-
-            logs.append(f"Tầng {floor}: hạ {enemy_name} (+{g} Slime Coin, +{x} xp)")
-
-        base_hp_after = max(1, min(max_hp, player_hp - bonus_hp_total))
-        await player_repo.update_player_hp_gold(conn, guild_id, user_id, base_hp_after, total_gold)
-        await telemetry_repo.record_gold_flow(conn, guild_id, user_id, total_gold, "dungeon_reward")
-        new_level, remain_xp, leveled_up = await player_repo.gain_xp_and_level(conn, guild_id, user_id, total_xp)
-        await telemetry_repo.record_combat_telemetry(
-            conn, guild_id, "dungeon", level, floors_cleared == total_floors,
-            gold=total_gold, xp=total_xp, turns=total_turns,
-            damage_dealt=total_damage_dealt, damage_taken=total_damage_taken,
-            drop_qty=sum(int(v) for v in drops.values()),
-        )
-
-        return DungeonResult(
-            ok=True,
-            cleared=floors_cleared == total_floors,
-            floors_cleared=floors_cleared,
-            total_floors=total_floors,
-            gold=total_gold, xp=total_xp, drops=drops,
-            hp=base_hp_after, level=new_level, xp_remain=remain_xp, leveled_up=leveled_up,
-            logs=logs,
-            combat_effects=CombatEffects(lifesteal=lifesteal, crit_bonus=crit_bonus, damage_reduction=damage_reduction),
-            set_bonus=str((eprofile.get("set_bonus") or {}).get("name", "")),
-            passive_skills=list(sprofile.get("passives", [])),
-            lifesteal_heal=total_lifesteal_heal,
-            damage_blocked=total_damage_blocked,
-            weekly_event={"id": str(event.get("id", "")), "name": str(event.get("name", "Weekly Event"))},
-        )
 
     @staticmethod
     async def party_hunt(guild_id: int, user_ids: list[int], lang: str = "en") -> PartyHuntResult:

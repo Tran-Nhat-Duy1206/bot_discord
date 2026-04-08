@@ -247,7 +247,7 @@ CHARACTERS = {
         "hp": 110, "attack": 12, "defense": 12, "speed": 10, "passive_skill": "iron_bastion", "emoji": "🛡",
     },
     "human_adept_mage": {
-        "name": "Human", "form": "Adept Mage", "rarity": "rare", "role": "sp", "species": "human",
+        "name": "Human", "form": "Adept Mage", "rarity": "rare", "role": "support", "species": "human",
         "form_index": 3, "evolution_line": "human_generic", "gender": "none",
         "hp": 98, "attack": 15, "defense": 11, "speed": 14, "passive_skill": "arcane_mist", "emoji": "📜",
     },
@@ -294,12 +294,12 @@ CHARACTERS = {
         "hp": 190, "attack": 24, "defense": 23, "speed": 15, "passive_skill": "iron_bastion", "emoji": "🟪",
     },
     "rigurd_hobgoblin": {
-        "name": "Rigurd", "form": "Hobgoblin Regent", "rarity": "rare", "role": "sp", "species": "hobgoblin",
+        "name": "Rigurd", "form": "Hobgoblin Regent", "rarity": "rare", "role": "support", "species": "hobgoblin",
         "form_index": 1, "evolution_line": "rigurd", "gender": "male",
         "hp": 146, "attack": 14, "defense": 17, "speed": 11, "passive_skill": "arcane_mist", "emoji": "🏰",
     },
     "rigurd_high_goblin": {
-        "name": "Rigurd", "form": "High Goblin King", "rarity": "epic", "role": "sp", "species": "high_goblin",
+        "name": "Rigurd", "form": "High Goblin King", "rarity": "epic", "role": "support", "species": "high_goblin",
         "form_index": 2, "evolution_line": "rigurd", "gender": "male",
         "hp": 205, "attack": 20, "defense": 25, "speed": 14, "passive_skill": "moon_veil", "emoji": "👑",
     },
@@ -325,7 +325,7 @@ CHARACTERS = {
         "hp": 244, "attack": 40, "defense": 26, "speed": 27, "passive_skill": "night_execution", "emoji": "🐲",
     },
     "abiru_lizard_king": {
-        "name": "Abiru", "form": "Lizardman King", "rarity": "epic", "role": "sp", "species": "lizardman",
+        "name": "Abiru", "form": "Lizardman King", "rarity": "epic", "role": "support", "species": "lizardman",
         "form_index": 1, "evolution_line": "abiru", "gender": "male",
         "hp": 196, "attack": 24, "defense": 23, "speed": 19, "passive_skill": "moon_veil", "emoji": "🦎",
     },
@@ -352,17 +352,17 @@ CHARACTERS = {
     },
 
     "testarossa_demon": {
-        "name": "Testarossa", "form": "Demon", "rarity": "epic", "role": "sp", "species": "demon",
+        "name": "Testarossa", "form": "Demon", "rarity": "epic", "role": "support", "species": "demon",
         "form_index": 1, "evolution_line": "testarossa", "gender": "female",
         "hp": 188, "attack": 30, "defense": 18, "speed": 23, "passive_skill": "demonic_contract", "emoji": "🤍",
     },
     "testarossa_primordial": {
-        "name": "Testarossa", "form": "Primordial White", "rarity": "legendary", "role": "sp", "species": "primordial",
+        "name": "Testarossa", "form": "Primordial White", "rarity": "legendary", "role": "support", "species": "primordial",
         "form_index": 2, "evolution_line": "testarossa", "gender": "female",
         "hp": 252, "attack": 41, "defense": 26, "speed": 29, "passive_skill": "void_authority", "emoji": "⚪",
     },
     "testarossa_awakened": {
-        "name": "Testarossa", "form": "Awakened Primordial", "rarity": "mythic", "role": "sp", "species": "ultimate",
+        "name": "Testarossa", "form": "Awakened Primordial", "rarity": "mythic", "role": "support", "species": "ultimate",
         "form_index": 3, "evolution_line": "testarossa", "gender": "female",
         "hp": 326, "attack": 54, "defense": 35, "speed": 35, "passive_skill": "void_authority", "emoji": "🤍",
     },
@@ -413,7 +413,7 @@ CHARACTERS = {
         "hp": 298, "attack": 56, "defense": 34, "speed": 36, "passive_skill": "void_authority", "emoji": "✨",
     },
     "yuuki_mastermind": {
-        "name": "Yuuki", "form": "Mastermind", "rarity": "legendary", "role": "sp", "species": "human",
+        "name": "Yuuki", "form": "Mastermind", "rarity": "legendary", "role": "support", "species": "human",
         "form_index": 1, "evolution_line": "yuuki", "gender": "male",
         "hp": 222, "attack": 36, "defense": 26, "speed": 28, "passive_skill": "predator_core", "emoji": "♟️",
     },
@@ -429,22 +429,22 @@ CHARACTERS = {
     },
 
     "kaijin_dwarf_smith": {
-        "name": "Kaijin", "form": "Dwarf Smith", "rarity": "rare", "role": "sp", "species": "dwarf",
+        "name": "Kaijin", "form": "Dwarf Smith", "rarity": "rare", "role": "support", "species": "dwarf",
         "form_index": 1, "evolution_line": "kaijin", "gender": "male",
         "hp": 152, "attack": 18, "defense": 19, "speed": 12, "passive_skill": "iron_bastion", "emoji": "🔨",
     },
     "kurobe_master_smith": {
-        "name": "Kurobe", "form": "Master Blacksmith", "rarity": "epic", "role": "sp", "species": "dwarf",
+        "name": "Kurobe", "form": "Master Blacksmith", "rarity": "epic", "role": "support", "species": "dwarf",
         "form_index": 1, "evolution_line": "kurobe", "gender": "male",
         "hp": 188, "attack": 26, "defense": 24, "speed": 14, "passive_skill": "blade_discipline", "emoji": "⚒️",
     },
     "myourmiles_steward": {
-        "name": "Myourmiles", "form": "Grand Steward", "rarity": "rare", "role": "sp", "species": "human",
+        "name": "Myourmiles", "form": "Grand Steward", "rarity": "rare", "role": "support", "species": "human",
         "form_index": 1, "evolution_line": "myourmiles", "gender": "male",
         "hp": 134, "attack": 14, "defense": 15, "speed": 15, "passive_skill": "arcane_mist", "emoji": "💰",
     },
     "vesta_researcher": {
-        "name": "Vesta", "form": "Arc Researcher", "rarity": "epic", "role": "sp", "species": "dwarf",
+        "name": "Vesta", "form": "Arc Researcher", "rarity": "epic", "role": "support", "species": "dwarf",
         "form_index": 1, "evolution_line": "vesta", "gender": "male",
         "hp": 174, "attack": 24, "defense": 18, "speed": 18, "passive_skill": "moon_veil", "emoji": "🧪",
     },
@@ -476,12 +476,12 @@ CHARACTERS = {
     },
 
     "king_edmaris": {
-        "name": "Edmaris", "form": "King of Farmus", "rarity": "epic", "role": "sp", "species": "human",
+        "name": "Edmaris", "form": "King of Farmus", "rarity": "epic", "role": "support", "species": "human",
         "form_index": 1, "evolution_line": "edmaris", "gender": "male",
         "hp": 176, "attack": 22, "defense": 20, "speed": 15, "passive_skill": "arcane_mist", "emoji": "👑",
     },
     "razen_grand_mage": {
-        "name": "Razen", "form": "Grand Mage", "rarity": "legendary", "role": "sp", "species": "human",
+        "name": "Razen", "form": "Grand Mage", "rarity": "legendary", "role": "support", "species": "human",
         "form_index": 1, "evolution_line": "razen", "gender": "male",
         "hp": 224, "attack": 39, "defense": 25, "speed": 26, "passive_skill": "predator_core", "emoji": "🔥",
     },
@@ -497,7 +497,7 @@ CHARACTERS = {
         "hp": 182, "attack": 32, "defense": 18, "speed": 23, "passive_skill": "hell_flame", "emoji": "🩹",
     },
     "tear_clown": {
-        "name": "Tear", "form": "Moderate Harlequin", "rarity": "legendary", "role": "sp", "species": "majin",
+        "name": "Tear", "form": "Moderate Harlequin", "rarity": "legendary", "role": "support", "species": "majin",
         "form_index": 1, "evolution_line": "tear", "gender": "female",
         "hp": 228, "attack": 37, "defense": 24, "speed": 27, "passive_skill": "moon_veil", "emoji": "🎭",
     },
@@ -513,7 +513,7 @@ CHARACTERS = {
         "hp": 184, "attack": 34, "defense": 19, "speed": 25, "passive_skill": "night_execution", "emoji": "🐆",
     },
     "albis_serpent": {
-        "name": "Albis", "form": "Serpent Queen", "rarity": "legendary", "role": "sp", "species": "beastman",
+        "name": "Albis", "form": "Serpent Queen", "rarity": "legendary", "role": "support", "species": "beastman",
         "form_index": 1, "evolution_line": "albis", "gender": "female",
         "hp": 230, "attack": 36, "defense": 27, "speed": 28, "passive_skill": "moon_veil", "emoji": "🐍",
     },
@@ -535,12 +535,12 @@ CHARACTERS = {
     },
 
     "beretta_demon_doll": {
-        "name": "Beretta", "form": "Demon Doll", "rarity": "legendary", "role": "sp", "species": "demon",
+        "name": "Beretta", "form": "Demon Doll", "rarity": "legendary", "role": "support", "species": "demon",
         "form_index": 1, "evolution_line": "beretta", "gender": "none",
         "hp": 236, "attack": 38, "defense": 28, "speed": 25, "passive_skill": "demonic_contract", "emoji": "🪆",
     },
     "ramiris_fairy_queen": {
-        "name": "Ramiris", "form": "Fairy Queen", "rarity": "legendary", "role": "sp", "species": "fairy",
+        "name": "Ramiris", "form": "Fairy Queen", "rarity": "legendary", "role": "support", "species": "fairy",
         "form_index": 1, "evolution_line": "ramiris", "gender": "female",
         "hp": 220, "attack": 32, "defense": 30, "speed": 30, "passive_skill": "arcane_mist", "emoji": "🧚",
     },
@@ -550,7 +550,7 @@ CHARACTERS = {
         "hp": 336, "attack": 57, "defense": 40, "speed": 31, "passive_skill": "void_authority", "emoji": "🪲",
     },
     "apito_queen_bee": {
-        "name": "Apito", "form": "Queen Bee", "rarity": "legendary", "role": "sp", "species": "insect",
+        "name": "Apito", "form": "Queen Bee", "rarity": "legendary", "role": "support", "species": "insect",
         "form_index": 1, "evolution_line": "apito", "gender": "female",
         "hp": 244, "attack": 37, "defense": 29, "speed": 29, "passive_skill": "spirit_blessing", "emoji": "🐝",
     },
@@ -560,7 +560,7 @@ CHARACTERS = {
         "hp": 318, "attack": 59, "defense": 34, "speed": 37, "passive_skill": "void_authority", "emoji": "🦊",
     },
     "dord_minister": {
-        "name": "Dord", "form": "Dwarf Minister", "rarity": "rare", "role": "sp", "species": "dwarf",
+        "name": "Dord", "form": "Dwarf Minister", "rarity": "rare", "role": "support", "species": "dwarf",
         "form_index": 1, "evolution_line": "dord", "gender": "male",
         "hp": 146, "attack": 16, "defense": 18, "speed": 13, "passive_skill": "arcane_mist", "emoji": "📘",
     },
@@ -580,12 +580,12 @@ CHARACTERS = {
         "hp": 218, "attack": 28, "defense": 26, "speed": 16, "passive_skill": "battle_fortitude", "emoji": "🐗",
     },
     "masayuki_chosen": {
-        "name": "Masayuki", "form": "Chosen Hero", "rarity": "legendary", "role": "sp", "species": "human",
+        "name": "Masayuki", "form": "Chosen Hero", "rarity": "legendary", "role": "support", "species": "human",
         "form_index": 1, "evolution_line": "masayuki", "gender": "male",
         "hp": 240, "attack": 36, "defense": 30, "speed": 28, "passive_skill": "predator_core", "emoji": "🎖️",
     },
     "gadra_ancient_mage": {
-        "name": "Gadra", "form": "Ancient Mage", "rarity": "legendary", "role": "sp", "species": "human",
+        "name": "Gadra", "form": "Ancient Mage", "rarity": "legendary", "role": "support", "species": "human",
         "form_index": 1, "evolution_line": "gadra", "gender": "male",
         "hp": 228, "attack": 40, "defense": 24, "speed": 27, "passive_skill": "moon_veil", "emoji": "📚",
     },
@@ -600,7 +600,7 @@ CHARACTERS = {
         "hp": 214, "attack": 28, "defense": 26, "speed": 18, "passive_skill": "tyrant_guard", "emoji": "🦴",
     },
     "treyni_dryad": {
-        "name": "Treyni", "form": "Dryad", "rarity": "epic", "role": "sp", "species": "dryad",
+        "name": "Treyni", "form": "Dryad", "rarity": "epic", "role": "support", "species": "dryad",
         "form_index": 1, "evolution_line": "treyni", "gender": "female",
         "hp": 186, "attack": 24, "defense": 22, "speed": 24, "passive_skill": "spirit_blessing", "emoji": "🌿",
     },
@@ -610,7 +610,7 @@ CHARACTERS = {
         "hp": 150, "attack": 18, "defense": 16, "speed": 20, "passive_skill": "spirit_blessing", "emoji": "🍃",
     },
     "clayman_demon_lord": {
-        "name": "Clayman", "form": "Demon Lord", "rarity": "legendary", "role": "sp", "species": "demon_lord",
+        "name": "Clayman", "form": "Demon Lord", "rarity": "legendary", "role": "support", "species": "demon_lord",
         "form_index": 1, "evolution_line": "clayman", "gender": "male",
         "hp": 236, "attack": 35, "defense": 27, "speed": 24, "passive_skill": "demonic_contract", "emoji": "🎎",
     },
@@ -630,7 +630,7 @@ CHARACTERS = {
         "hp": 308, "attack": 56, "defense": 34, "speed": 33, "passive_skill": "flame_sovereign", "emoji": "🌟",
     },
     "luminous_valentine": {
-        "name": "Luminous", "form": "Valentine", "rarity": "mythic", "role": "sp", "species": "demon_lord",
+        "name": "Luminous", "form": "Valentine", "rarity": "mythic", "role": "support", "species": "demon_lord",
         "form_index": 1, "evolution_line": "luminous", "gender": "female",
         "hp": 304, "attack": 52, "defense": 36, "speed": 32, "passive_skill": "moon_veil", "emoji": "🌹",
     },
@@ -640,7 +640,7 @@ CHARACTERS = {
         "hp": 322, "attack": 60, "defense": 35, "speed": 35, "passive_skill": "void_authority", "emoji": "🩸",
     },
     "veldanava_star_king": {
-        "name": "Veldanava", "form": "Star King Dragon", "rarity": "mythic", "role": "sp", "species": "god_dragon",
+        "name": "Veldanava", "form": "Star King Dragon", "rarity": "mythic", "role": "support", "species": "god_dragon",
         "form_index": 1, "evolution_line": "veldanava", "gender": "male",
         "hp": 360, "attack": 65, "defense": 42, "speed": 36, "passive_skill": "void_authority", "emoji": "🌌",
     },
@@ -808,3 +808,4 @@ def roll_character(pity_count: int = 0, banner_id: str = "none") -> tuple[str, s
 
 def character_exp_needed(level: int) -> int:
     return int(100 + (level ** 1.3) * 50)
+
