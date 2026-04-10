@@ -10,6 +10,7 @@ from .combat_service import CombatService
 
 
 DIFFICULTY_SET = {"normal", "hard", "nightmare"}
+SQLITE_INT64_MAX = (1 << 63) - 1
 
 
 @dataclass
@@ -130,6 +131,13 @@ def _merge_reward(dst: dict, add: dict) -> dict:
     return out
 
 
+def _sqlite_int64(value: int) -> int:
+    n = int(value)
+    if n < 0:
+        return int((-n) % SQLITE_INT64_MAX) * -1
+    return int(n % SQLITE_INT64_MAX)
+
+
 class DungeonRunService(BaseService):
     @staticmethod
     async def _get_or_init_weekly_state(conn) -> dict:
@@ -200,7 +208,8 @@ class DungeonRunService(BaseService):
 
             run_id = f"dr-{guild_id}-{user_id}-{int(time.time() * 1000)}"
             total_floors = 12
-            run_seed = int(weekly.get("seed", 0)) ^ (guild_id * 31 + user_id * 17 + int(time.time()))
+            run_seed_source = int(weekly.get("seed", 0)) ^ (guild_id * 31 + user_id * 17 + int(time.time()))
+            run_seed = _sqlite_int64(run_seed_source)
             nodes = generate_floor_nodes(total_floors=total_floors, seed=run_seed, difficulty=diff)
 
             run = {
@@ -219,7 +228,7 @@ class DungeonRunService(BaseService):
                 "corruption": 0,
                 "revive_tokens": 0,
                 "seed": run_seed,
-                "weekly_seed": int(weekly.get("seed", 0)),
+                "weekly_seed": _sqlite_int64(int(weekly.get("seed", 0))),
                 "current_node_id": "",
                 "pending_choice": {},
                 "pending_rewards": {},

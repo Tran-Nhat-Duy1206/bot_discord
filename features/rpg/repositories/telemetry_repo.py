@@ -107,6 +107,47 @@ async def record_combat_telemetry(
     )
 
 
+async def update_player_streak(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_id: int,
+    mode: str,
+    win: bool,
+) -> tuple[int, int]:
+    now = int(time.time())
+    async with conn.execute(
+        """
+        SELECT current_streak, best_streak
+        FROM player_combat_streaks
+        WHERE guild_id = ? AND user_id = ? AND mode = ?
+        """,
+        (guild_id, user_id, str(mode)),
+    ) as cur:
+        row = await cur.fetchone()
+
+    prev_current = int(row[0]) if row else 0
+    prev_best = int(row[1]) if row else 0
+    current = (prev_current + 1) if bool(win) else 0
+    best = max(prev_best, current)
+
+    await conn.execute(
+        """
+        INSERT INTO player_combat_streaks(
+            guild_id, user_id, mode, current_streak, best_streak, last_result_win, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id, mode)
+        DO UPDATE SET
+            current_streak = excluded.current_streak,
+            best_streak = excluded.best_streak,
+            last_result_win = excluded.last_result_win,
+            updated_at = excluded.updated_at
+        """,
+        (guild_id, user_id, str(mode), current, best, 1 if win else 0, now),
+    )
+    return current, best
+
+
 async def record_slime_jackpot(
     conn: aiosqlite.Connection,
     guild_id: int,
@@ -198,3 +239,69 @@ async def record_monster_kill(
         """,
         (guild_id, user_id, monster_name),
     )
+
+
+async def record_guild_boss_damage(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    user_id: int,
+    boss_id: str,
+    damage: int,
+    win: bool,
+) -> None:
+    now = int(time.time())
+    dealt = max(0, int(damage))
+    await conn.execute(
+        """
+        INSERT INTO guild_boss_damage(
+            guild_id, user_id, boss_id, total_damage, last_damage, battles, wins, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(guild_id, user_id)
+        DO UPDATE SET
+            boss_id = excluded.boss_id,
+            total_damage = total_damage + excluded.total_damage,
+            last_damage = excluded.last_damage,
+            battles = battles + 1,
+            wins = wins + excluded.wins,
+            updated_at = excluded.updated_at
+        """,
+        (guild_id, user_id, str(boss_id or ""), dealt, dealt, 1 if win else 0, now),
+    )
+
+
+async def get_top_guild_boss_damage(
+    conn: aiosqlite.Connection,
+    guild_id: int,
+    limit: int = 10,
+) -> list[tuple[int, int, int, int, int]]:
+    async with conn.execute(
+        """
+        SELECT user_id, total_damage, battles, wins, last_damage
+        FROM guild_boss_damage
+        WHERE guild_id = ?
+        ORDER BY total_damage DESC, wins DESC, updated_at ASC
+        LIMIT ?
+        """,
+        (guild_id, max(1, int(limit))),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        (int(r[0]), int(r[1]), int(r[2]), int(r[3]), int(r[4]))
+        for r in rows
+    ]
+
+
+async def get_guild_boss_summary(conn: aiosqlite.Connection, guild_id: int) -> tuple[int, int]:
+    async with conn.execute(
+        """
+        SELECT COUNT(*), COALESCE(SUM(wins), 0)
+        FROM guild_boss_damage
+        WHERE guild_id = ?
+        """,
+        (guild_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)

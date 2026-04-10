@@ -14,6 +14,7 @@ TEXTS = {
     "rpg.hunt_unavailable": "❌ Hunt chưa sẵn sàng (cooldown hoặc chưa có team).",
     "rpg.hunt_cooldown": "❌ Hunt đang cooldown: còn **{seconds}s**.",
     "rpg.boss_unavailable": "❌ Boss chưa sẵn sàng (cooldown hoặc chưa có team).",
+    "rpg.boss_cooldown": "❌ Boss đang cooldown: còn **{seconds}s**.",
     "rpg.dungeon_unavailable": "❌ Dungeon chưa sẵn sàng (cooldown hoặc chưa có team).",
     "rpg.no_combat_detail": "Không có chi tiết",
     "rpg.log_link_hint": "Nhấn `📜 Battle Replay` để xem toàn bộ nhật ký lượt đánh.",

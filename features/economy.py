@@ -10,8 +10,16 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
+from features.emoji_registry import (
+    CURRENCY_ICON,
+    blackjack_card_emoji_name,
+    emoji_or_fallback as emoji_or_fallback_in_bot,
+    find_bot_emoji_by_name,
+)
+
 
 DB_PATH = os.getenv("ECONOMY_DB", "data/economy.db")
+RPG_DB_PATH = os.getenv("RPG_DB", "data/rpg.db")
 SQLITE_TIMEOUT = float(os.getenv("ECONOMY_SQLITE_TIMEOUT", "30"))
 
 DAILY_REWARD = int(os.getenv("ECONOMY_DAILY_REWARD", "50"))
@@ -26,37 +34,13 @@ BJ_VIEW_TIMEOUT = int(os.getenv("BJ_VIEW_TIMEOUT", "300"))
 BACK_EMOJI_NAME = os.getenv("BJ_BACK_EMOJI_NAME", "back")
 BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID", "745686280146387033"))
 CURRENCY_NAME = "Slime Coin"
-CURRENCY_ICON = "🪙"
 
 SHOP_ITEMS = {
-    "coffee": {"name": "Cà phê", "emoji": "☕", "price": 80, "desc": "Tăng tỉnh táo đi farm Slime Coin"},
+    "coffee": {"name": "Cà phê", "emoji": "☕", "price": 80, "desc": f"Tăng tỉnh táo đi farm {CURRENCY_ICON} Slime Coin"},
     "lucky_charm": {"name": "Bùa may mắn", "emoji": "🍀", "price": 240, "desc": "Vật phẩm sưu tầm"},
     "energy_drink": {"name": "Nước tăng lực", "emoji": "⚡", "price": 150, "desc": "Nạp pin cho ngày mới"},
     "mystery_box": {"name": "Hộp bí ẩn", "emoji": "🎁", "price": 500, "desc": "Không biết mở ra gì"},
     "golden_ticket": {"name": "Vé vàng", "emoji": "🎫", "price": 950, "desc": "Vật phẩm hiếm để khoe"},
-}
-
-SUIT_TO_WORD = {
-    "S": "spades",
-    "H": "hearts",
-    "D": "diamonds",
-    "C": "clubs",
-}
-
-RANK_TO_WORD = {
-    "A": "ace",
-    "K": "king",
-    "Q": "queen",
-    "J": "jack",
-    "10": "10",
-    "9": "9",
-    "8": "8",
-    "7": "7",
-    "6": "6",
-    "5": "5",
-    "4": "4",
-    "3": "3",
-    "2": "2",
 }
 
 ALL_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -70,6 +54,10 @@ DB_WRITE_LOCK = asyncio.Lock()
 
 def _open_db():
     return aiosqlite.connect(DB_PATH, timeout=SQLITE_TIMEOUT)
+
+
+def _open_rpg_db():
+    return aiosqlite.connect(RPG_DB_PATH, timeout=SQLITE_TIMEOUT)
 
 
 async def _ensure_user_in_conn(conn: aiosqlite.Connection, user_id: int):
@@ -86,6 +74,59 @@ def ensure_db_dir():
     db_dir = os.path.dirname(DB_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
+
+
+def ensure_rpg_db_dir():
+    db_dir = os.path.dirname(RPG_DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+
+async def _ensure_rpg_schema():
+    ensure_rpg_db_dir()
+    async with _open_rpg_db() as conn:
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS players (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                level INTEGER NOT NULL DEFAULT 1,
+                xp INTEGER NOT NULL DEFAULT 0,
+                hp INTEGER NOT NULL DEFAULT 100,
+                max_hp INTEGER NOT NULL DEFAULT 100,
+                attack INTEGER NOT NULL DEFAULT 12,
+                defense INTEGER NOT NULL DEFAULT 6,
+                gold INTEGER NOT NULL DEFAULT 150,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(guild_id, user_id)
+            )
+            """
+        )
+        await conn.commit()
+
+
+async def _ensure_rpg_player_in_conn(conn: aiosqlite.Connection, guild_id: int, user_id: int):
+    await conn.execute(
+        """
+        INSERT OR IGNORE INTO players(
+            guild_id, user_id, level, xp, hp, max_hp, attack, defense, gold, created_at
+        )
+        VALUES (?, ?, 1, 0, 100, 100, 12, 6, 150, ?)
+        """,
+        (guild_id, user_id, int(time.time())),
+    )
+
+
+async def _get_rpg_balance_in_conn(conn: aiosqlite.Connection, guild_id: int, user_id: int) -> int:
+    async with conn.execute(
+        "SELECT gold FROM players WHERE guild_id = ? AND user_id = ?",
+        (guild_id, user_id),
+    ) as cur:
+        row = await cur.fetchone()
+    return int(row[0]) if row else 0
 
 
 async def db_init():
@@ -135,89 +176,57 @@ async def db_init():
             """
         )
         await conn.commit()
+    await _ensure_rpg_schema()
 
 
-async def ensure_user(user_id: int):
+async def ensure_user(guild_id: int, user_id: int):
     async with DB_WRITE_LOCK:
         async with _open_db() as conn:
             await _ensure_user_in_conn(conn, user_id)
             await conn.commit()
+        async with _open_rpg_db() as rpg_conn:
+            await _ensure_rpg_player_in_conn(rpg_conn, guild_id, user_id)
+            await rpg_conn.commit()
 
 
-async def get_balance(user_id: int) -> int:
+async def get_balance(guild_id: int, user_id: int) -> int:
     async with DB_WRITE_LOCK:
-        async with _open_db() as conn:
-            await _ensure_user_in_conn(conn, user_id)
+        async with _open_rpg_db() as conn:
+            await _ensure_rpg_player_in_conn(conn, guild_id, user_id)
+            balance = await _get_rpg_balance_in_conn(conn, guild_id, user_id)
             await conn.commit()
-
-            async with conn.execute(
-                """
-                SELECT balance
-                FROM economy_users
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                return int(row[0]) if row else 0
+            return balance
 
 
-async def add_balance(user_id: int, amount: int):
+async def add_balance(guild_id: int, user_id: int, amount: int):
     if amount <= 0:
         return
 
     async with DB_WRITE_LOCK:
-        async with _open_db() as conn:
-            await _ensure_user_in_conn(conn, user_id)
+        async with _open_rpg_db() as conn:
+            await _ensure_rpg_player_in_conn(conn, guild_id, user_id)
             await conn.execute(
-                """
-                UPDATE economy_users
-                SET balance = balance + ?,
-                    total_earned = total_earned + ?
-                WHERE user_id = ?
-                """,
-                (amount, amount, user_id),
+                "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
+                (amount, guild_id, user_id),
             )
             await conn.commit()
 
 
-async def refund_balance(user_id: int, amount: int):
+async def refund_balance(guild_id: int, user_id: int, amount: int):
     if amount <= 0:
         return
-
-    async with DB_WRITE_LOCK:
-        async with _open_db() as conn:
-            await _ensure_user_in_conn(conn, user_id)
-            await conn.execute(
-                """
-                UPDATE economy_users
-                SET balance = balance + ?
-                WHERE user_id = ?
-                """,
-                (amount, user_id),
-            )
-            await conn.commit()
+    await add_balance(guild_id, user_id, amount)
 
 
-async def remove_balance(user_id: int, amount: int) -> bool:
+async def remove_balance(guild_id: int, user_id: int, amount: int) -> bool:
     if amount <= 0:
         return False
 
     async with DB_WRITE_LOCK:
-        async with _open_db() as conn:
+        async with _open_rpg_db() as conn:
             await conn.execute("SAVEPOINT econ_remove")
-            await _ensure_user_in_conn(conn, user_id)
-
-            async with conn.execute(
-                """
-                SELECT balance
-                FROM economy_users
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                balance = int(row[0]) if row else 0
+            await _ensure_rpg_player_in_conn(conn, guild_id, user_id)
+            balance = await _get_rpg_balance_in_conn(conn, guild_id, user_id)
 
             if balance < amount:
                 await conn.execute("ROLLBACK TO econ_remove")
@@ -225,64 +234,38 @@ async def remove_balance(user_id: int, amount: int) -> bool:
                 return False
 
             await conn.execute(
-                """
-                UPDATE economy_users
-                SET balance = balance - ?,
-                    total_lost = total_lost + ?
-                WHERE user_id = ?
-                """,
-                (amount, amount, user_id),
+                "UPDATE players SET gold = gold - ? WHERE guild_id = ? AND user_id = ?",
+                (amount, guild_id, user_id),
             )
             await conn.execute("RELEASE econ_remove")
             await conn.commit()
             return True
 
 
-async def transfer_balance(from_user_id: int, to_user_id: int, amount: int) -> bool:
+async def transfer_balance(guild_id: int, from_user_id: int, to_user_id: int, amount: int) -> bool:
     if amount <= 0:
         return False
 
     async with DB_WRITE_LOCK:
-        async with _open_db() as conn:
+        async with _open_rpg_db() as conn:
             try:
                 await conn.execute("SAVEPOINT econ_transfer")
-                await _ensure_user_in_conn(conn, from_user_id)
-                await _ensure_user_in_conn(conn, to_user_id)
+                await _ensure_rpg_player_in_conn(conn, guild_id, from_user_id)
+                await _ensure_rpg_player_in_conn(conn, guild_id, to_user_id)
 
-                async with conn.execute(
-                    """
-                    SELECT balance
-                    FROM economy_users
-                    WHERE user_id = ?
-                    """,
-                    (from_user_id,),
-                ) as cur:
-                    row = await cur.fetchone()
-                    balance = int(row[0]) if row else 0
-
+                balance = await _get_rpg_balance_in_conn(conn, guild_id, from_user_id)
                 if balance < amount:
                     await conn.execute("ROLLBACK TO econ_transfer")
                     await conn.execute("RELEASE econ_transfer")
                     return False
 
                 await conn.execute(
-                    """
-                    UPDATE economy_users
-                    SET balance = balance - ?,
-                        total_lost = total_lost + ?
-                    WHERE user_id = ?
-                    """,
-                    (amount, amount, from_user_id),
+                    "UPDATE players SET gold = gold - ? WHERE guild_id = ? AND user_id = ?",
+                    (amount, guild_id, from_user_id),
                 )
-
                 await conn.execute(
-                    """
-                    UPDATE economy_users
-                    SET balance = balance + ?,
-                        total_earned = total_earned + ?
-                    WHERE user_id = ?
-                    """,
-                    (amount, amount, to_user_id),
+                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
+                    (amount, guild_id, to_user_id),
                 )
 
                 await conn.execute("RELEASE econ_transfer")
@@ -300,7 +283,7 @@ async def transfer_balance(from_user_id: int, to_user_id: int, amount: int) -> b
                 return False
 
 
-async def claim_daily(user_id: int) -> tuple[bool, int, int]:
+async def claim_daily(guild_id: int, user_id: int) -> tuple[bool, int, int]:
     now = int(time.time())
 
     async with DB_WRITE_LOCK:
@@ -328,31 +311,28 @@ async def claim_daily(user_id: int) -> tuple[bool, int, int]:
             await conn.execute(
                 """
                 UPDATE economy_users
-                SET balance = balance + ?,
-                    total_earned = total_earned + ?,
+                SET total_earned = total_earned + ?,
                     last_daily_ts = ?
                 WHERE user_id = ?
                 """,
-                (DAILY_REWARD, DAILY_REWARD, now, user_id),
+                (DAILY_REWARD, now, user_id),
             )
 
-            async with conn.execute(
-                """
-                SELECT balance
-                FROM economy_users
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                balance = int(row[0]) if row else 0
+            async with _open_rpg_db() as rpg_conn:
+                await _ensure_rpg_player_in_conn(rpg_conn, guild_id, user_id)
+                await rpg_conn.execute(
+                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
+                    (DAILY_REWARD, guild_id, user_id),
+                )
+                balance = await _get_rpg_balance_in_conn(rpg_conn, guild_id, user_id)
+                await rpg_conn.commit()
 
             await conn.execute("RELEASE econ_daily")
             await conn.commit()
             return True, balance, 0
 
 
-async def claim_work(user_id: int) -> tuple[bool, int, int, int]:
+async def claim_work(guild_id: int, user_id: int) -> tuple[bool, int, int, int]:
     now = int(time.time())
 
     async with DB_WRITE_LOCK:
@@ -384,24 +364,21 @@ async def claim_work(user_id: int) -> tuple[bool, int, int, int]:
             await conn.execute(
                 """
                 UPDATE economy_users
-                SET balance = balance + ?,
-                    total_earned = total_earned + ?,
+                SET total_earned = total_earned + ?,
                     last_work_ts = ?
                 WHERE user_id = ?
                 """,
-                (reward, reward, now, user_id),
+                (reward, now, user_id),
             )
 
-            async with conn.execute(
-                """
-                SELECT balance
-                FROM economy_users
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                balance = int(row[0]) if row else 0
+            async with _open_rpg_db() as rpg_conn:
+                await _ensure_rpg_player_in_conn(rpg_conn, guild_id, user_id)
+                await rpg_conn.execute(
+                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
+                    (reward, guild_id, user_id),
+                )
+                balance = await _get_rpg_balance_in_conn(rpg_conn, guild_id, user_id)
+                await rpg_conn.commit()
 
             await conn.execute("RELEASE econ_work")
             await conn.commit()
@@ -425,12 +402,13 @@ async def record_bj_result(user_id: int, won: bool):
 
 
 async def get_top_balances(limit: int = 10):
-    async with _open_db() as conn:
+    async with _open_rpg_db() as conn:
         async with conn.execute(
             """
-            SELECT user_id, balance
-            FROM economy_users
-            ORDER BY balance DESC, user_id ASC
+            SELECT user_id, SUM(gold) AS total_gold
+            FROM players
+            GROUP BY user_id
+            ORDER BY total_gold DESC, user_id ASC
             LIMIT ?
             """,
             (limit,),
@@ -439,7 +417,7 @@ async def get_top_balances(limit: int = 10):
             return rows
 
 
-async def buy_item(user_id: int, item_key: str, quantity: int) -> tuple[bool, str | None, int]:
+async def buy_item(guild_id: int, user_id: int, item_key: str, quantity: int) -> tuple[bool, str | None, int]:
     if quantity <= 0:
         return False, "Số lượng phải lớn hơn 0.", 0
 
@@ -450,51 +428,54 @@ async def buy_item(user_id: int, item_key: str, quantity: int) -> tuple[bool, st
     total_price = int(item["price"]) * quantity
 
     async with DB_WRITE_LOCK:
-        async with _open_db() as conn:
-            await conn.execute("SAVEPOINT econ_buy")
-            await _ensure_user_in_conn(conn, user_id)
-
-            async with conn.execute(
-                "SELECT balance FROM economy_users WHERE user_id = ?",
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                bal = int(row[0]) if row else 0
-
+        async with _open_rpg_db() as rpg_conn:
+            await rpg_conn.execute("SAVEPOINT econ_buy_currency")
+            await _ensure_rpg_player_in_conn(rpg_conn, guild_id, user_id)
+            bal = await _get_rpg_balance_in_conn(rpg_conn, guild_id, user_id)
             if bal < total_price:
-                await conn.execute("ROLLBACK TO econ_buy")
-                await conn.execute("RELEASE econ_buy")
+                await rpg_conn.execute("ROLLBACK TO econ_buy_currency")
+                await rpg_conn.execute("RELEASE econ_buy_currency")
                 return False, f"Không đủ {CURRENCY_NAME} để mua.", bal
 
-            await conn.execute(
-                """
-                UPDATE economy_users
-                SET balance = balance - ?,
-                    total_lost = total_lost + ?
-                WHERE user_id = ?
-                """,
-                (total_price, total_price, user_id),
+            await rpg_conn.execute(
+                "UPDATE players SET gold = gold - ? WHERE guild_id = ? AND user_id = ?",
+                (total_price, guild_id, user_id),
             )
+            await rpg_conn.execute("RELEASE econ_buy_currency")
+            await rpg_conn.commit()
 
-            await conn.execute(
-                """
-                INSERT INTO economy_inventory(user_id, item_key, quantity)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id, item_key)
-                DO UPDATE SET quantity = quantity + excluded.quantity
-                """,
-                (user_id, item_key, quantity),
-            )
+            try:
+                async with _open_db() as conn:
+                    await conn.execute("SAVEPOINT econ_buy_inventory")
+                    await _ensure_user_in_conn(conn, user_id)
+                    await conn.execute(
+                        """
+                        INSERT INTO economy_inventory(user_id, item_key, quantity)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(user_id, item_key)
+                        DO UPDATE SET quantity = quantity + excluded.quantity
+                        """,
+                        (user_id, item_key, quantity),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE economy_users
+                        SET total_lost = total_lost + ?
+                        WHERE user_id = ?
+                        """,
+                        (total_price, user_id),
+                    )
+                    await conn.execute("RELEASE econ_buy_inventory")
+                    await conn.commit()
+            except Exception:
+                await rpg_conn.execute(
+                    "UPDATE players SET gold = gold + ? WHERE guild_id = ? AND user_id = ?",
+                    (total_price, guild_id, user_id),
+                )
+                await rpg_conn.commit()
+                raise
 
-            async with conn.execute(
-                "SELECT balance FROM economy_users WHERE user_id = ?",
-                (user_id,),
-            ) as cur:
-                row = await cur.fetchone()
-                new_balance = int(row[0]) if row else 0
-
-            await conn.execute("RELEASE econ_buy")
-            await conn.commit()
+            new_balance = await _get_rpg_balance_in_conn(rpg_conn, guild_id, user_id)
             return True, None, new_balance
 
 
@@ -593,24 +574,15 @@ def dealer_visible_value(hand: list[str]) -> str:
 
 
 def card_to_emoji_name(card: str) -> str:
-    rank = card[:-1]
-    suit = card[-1]
-    return f"{RANK_TO_WORD[rank]}_of_{SUIT_TO_WORD[suit]}"
+    return blackjack_card_emoji_name(card)
 
 
 def find_emoji_by_name(name: str) -> Optional[discord.Emoji]:
-    if BOT_INSTANCE is None:
-        return None
-
-    for emoji in BOT_INSTANCE.emojis:
-        if emoji.name == name:
-            return emoji
-    return None
+    return find_bot_emoji_by_name(BOT_INSTANCE, name)
 
 
 def emoji_or_fallback(name: str, fallback: str) -> str:
-    emoji = find_emoji_by_name(name)
-    return str(emoji) if emoji else fallback
+    return emoji_or_fallback_in_bot(BOT_INSTANCE, name, fallback)
 
 
 def card_to_emoji(card: str) -> str:
@@ -621,6 +593,10 @@ def card_to_emoji(card: str) -> str:
 
 def back_emoji() -> str:
     return emoji_or_fallback(BACK_EMOJI_NAME, "`[ÚP]`")
+
+
+def currency_icon() -> str:
+    return emoji_or_fallback("slimecoin", CURRENCY_ICON)
 
 
 def hand_to_emojis(hand: list[str], hide_after_first: bool = False) -> str:
@@ -635,6 +611,7 @@ def hand_to_emojis(hand: list[str], hide_after_first: bool = False) -> str:
 
 @dataclass
 class BlackjackGame:
+    guild_id: int
     user_id: int
     channel_id: int
     bet: int
@@ -704,7 +681,7 @@ async def resolve_blackjack(game: BlackjackGame):
         if dealer_bust:
             game.result = "push"
             game.payout = game.bet
-            await refund_balance(game.user_id, game.bet)
+            await refund_balance(game.guild_id, game.user_id, game.bet)
             await record_bj_result(game.user_id, won=False)
         else:
             game.result = "bust"
@@ -722,19 +699,19 @@ async def resolve_blackjack(game: BlackjackGame):
             game.result = "win"
             game.payout = game.bet * 2
 
-        await add_balance(game.user_id, game.payout)
+        await add_balance(game.guild_id, game.user_id, game.payout)
         await record_bj_result(game.user_id, won=True)
 
     elif natural_blackjack and dealer_total != 21:
         game.result = "blackjack"
         game.payout = int(game.bet * 2.5)
-        await add_balance(game.user_id, game.payout)
+        await add_balance(game.guild_id, game.user_id, game.payout)
         await record_bj_result(game.user_id, won=True)
 
     elif player_total > dealer_total:
         game.result = "win"
         game.payout = game.bet * 2
-        await add_balance(game.user_id, game.payout)
+        await add_balance(game.guild_id, game.user_id, game.payout)
         await record_bj_result(game.user_id, won=True)
 
     elif player_total < dealer_total:
@@ -745,7 +722,7 @@ async def resolve_blackjack(game: BlackjackGame):
     else:
         game.result = "push"
         game.payout = game.bet
-        await refund_balance(game.user_id, game.bet)
+        await refund_balance(game.guild_id, game.user_id, game.bet)
         await record_bj_result(game.user_id, won=False)
 
     game.finished = True
@@ -802,7 +779,7 @@ async def build_blackjack_embed(
         lines.append("**Gấp đôi:** `Có`")
 
     if game.finished:
-        balance_now = await get_balance(game.user_id)
+        balance_now = await get_balance(game.guild_id, game.user_id)
 
         if game.result == "blackjack":
             net = game.payout - game.bet
@@ -929,7 +906,7 @@ class BlackjackView(discord.ui.View):
                     ephemeral=True,
                 )
 
-            if not await remove_balance(self.game.user_id, self.game.original_bet):
+            if not await remove_balance(self.game.guild_id, self.game.user_id, self.game.original_bet):
                 return await interaction.response.send_message(
                     "❌ Bạn không đủ tiền để gấp đôi.",
                     ephemeral=True,
@@ -952,7 +929,7 @@ class BlackjackView(discord.ui.View):
             self.game.result = "timeout"
             self.game.payout = self.game.bet
 
-            await refund_balance(self.game.user_id, self.game.bet)
+            await refund_balance(self.game.guild_id, self.game.user_id, self.game.bet)
             await self.disable_all()
 
             try:
@@ -990,15 +967,20 @@ async def setup_economy(bot: commands.Bot):
 
     @economy_group.command(name="balance", description="Xem số dư của bạn")
     async def balance(interaction: discord.Interaction):
-        bal = await get_balance(interaction.user.id)
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        bal = await get_balance(interaction.guild.id, interaction.user.id)
+        icon = currency_icon()
         await interaction.response.send_message(
-            f"💰 {interaction.user.mention} hiện có **{bal}** {CURRENCY_ICON} {CURRENCY_NAME}",
+            f"💰 {interaction.user.mention} hiện có **{bal}** {icon} {CURRENCY_NAME}",
             ephemeral=True,
         )
 
     @economy_group.command(name="daily", description="Nhận thưởng hằng ngày")
     async def daily(interaction: discord.Interaction):
-        ok, balance_now, remain = await claim_daily(interaction.user.id)
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        ok, balance_now, remain = await claim_daily(interaction.guild.id, interaction.user.id)
         if not ok:
             return await interaction.response.send_message(
                 f"⏳ Bạn đã nhận daily rồi. Quay lại sau **{format_seconds(remain)}**.",
@@ -1010,9 +992,11 @@ async def setup_economy(bot: commands.Bot):
             f"Bạn hiện có: **{balance_now}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
-    @economy_group.command(name="work", description="Đi làm để kiếm Slime Coin")
+    @economy_group.command(name="work", description=f"Đi làm để kiếm {CURRENCY_ICON} Slime Coin")
     async def work(interaction: discord.Interaction):
-        ok, reward, balance_now, remain = await claim_work(interaction.user.id)
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        ok, reward, balance_now, remain = await claim_work(interaction.guild.id, interaction.user.id)
         if not ok:
             return await interaction.response.send_message(
                 f"⏳ Bạn vừa đi làm xong. Quay lại sau **{format_seconds(remain)}**.",
@@ -1045,7 +1029,9 @@ async def setup_economy(bot: commands.Bot):
     @app_commands.describe(item="Mã vật phẩm trong /shop", quantity="Số lượng muốn mua")
     @app_commands.autocomplete(item=autocomplete_shop_item)
     async def buy(interaction: discord.Interaction, item: str, quantity: int = 1):
-        ok, err, balance_now = await buy_item(interaction.user.id, item, quantity)
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
+        ok, err, balance_now = await buy_item(interaction.guild.id, interaction.user.id, item, quantity)
         if not ok:
             return await interaction.response.send_message(f"❌ {err}", ephemeral=True)
 
@@ -1082,9 +1068,11 @@ async def setup_economy(bot: commands.Bot):
         )
         await interaction.response.send_message(embed=e)
 
-    @economy_group.command(name="give", description="Chuyển Slime Coin cho người khác")
-    @app_commands.describe(member="Người nhận", amount="Số Slime Coin muốn chuyển")
+    @economy_group.command(name="give", description=f"Chuyển {CURRENCY_ICON} Slime Coin cho người khác")
+    @app_commands.describe(member="Người nhận", amount=f"Số {CURRENCY_ICON} Slime Coin muốn chuyển")
     async def give(interaction: discord.Interaction, member: discord.Member, amount: int):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
         if member.bot:
             return await interaction.response.send_message(f"❌ Không thể chuyển {CURRENCY_NAME} cho bot.", ephemeral=True)
 
@@ -1094,18 +1082,20 @@ async def setup_economy(bot: commands.Bot):
         if amount <= 0:
             return await interaction.response.send_message(f"❌ Số {CURRENCY_NAME} phải lớn hơn 0.", ephemeral=True)
 
-        success = await transfer_balance(interaction.user.id, member.id, amount)
+        success = await transfer_balance(interaction.guild.id, interaction.user.id, member.id, amount)
         if not success:
             return await interaction.response.send_message(f"❌ Bạn không đủ {CURRENCY_NAME}.", ephemeral=True)
 
-        sender_balance = await get_balance(interaction.user.id)
+        sender_balance = await get_balance(interaction.guild.id, interaction.user.id)
         await interaction.response.send_message(
             f"💸 {interaction.user.mention} đã chuyển **{amount}** {CURRENCY_ICON} {CURRENCY_NAME} cho {member.mention}.\n"
             f"Số dư còn lại: **{sender_balance}** {CURRENCY_ICON} {CURRENCY_NAME}"
         )
 
-    @economy_group.command(name="leaderboard", description="Xem top Slime Coin toàn bộ bot")
+    @economy_group.command(name="leaderboard", description=f"Xem top {CURRENCY_ICON} Slime Coin toàn bộ bot")
     async def leaderboard(interaction: discord.Interaction):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
         rows = await get_top_balances(limit=10)
         if not rows:
             return await interaction.response.send_message("Chưa có dữ liệu.", ephemeral=True)
@@ -1117,14 +1107,14 @@ async def setup_economy(bot: commands.Bot):
             lines.append(f"**{idx}.** {name} — **{balance_value}** {CURRENCY_ICON} {CURRENCY_NAME}")
 
         embed = discord.Embed(
-            title="🏆 Global Slime Coin Leaderboard",
+            title=f"🏆 Global {CURRENCY_ICON} Slime Coin Leaderboard",
             description="\n".join(lines),
             color=discord.Color.gold(),
         )
         await interaction.response.send_message(embed=embed)
 
-    @economy_group.command(name="blackjack", description="Chơi blackjack cược Slime Coin")
-    @app_commands.describe(bet="Số Slime Coin muốn cược")
+    @economy_group.command(name="blackjack", description=f"Chơi blackjack cược {CURRENCY_ICON} Slime Coin")
+    @app_commands.describe(bet=f"Số {CURRENCY_ICON} Slime Coin muốn cược")
     async def blackjack(interaction: discord.Interaction, bet: int):
         if interaction.guild is None:
             return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
@@ -1156,14 +1146,14 @@ async def setup_economy(bot: commands.Bot):
                 ephemeral=True,
             )
 
-        balance_now = await get_balance(interaction.user.id)
+        balance_now = await get_balance(interaction.guild.id, interaction.user.id)
         if balance_now < bet:
             return await interaction.response.send_message(
                 f"❌ Bạn không đủ {CURRENCY_NAME}. Số dư hiện tại: **{balance_now}** {CURRENCY_ICON}",
                 ephemeral=True,
             )
 
-        if not await remove_balance(interaction.user.id, bet):
+        if not await remove_balance(interaction.guild.id, interaction.user.id, bet):
             return await interaction.response.send_message("❌ Không thể trừ tiền cược.", ephemeral=True)
 
         BJ_COMMAND_LAST_USED[interaction.user.id] = now
@@ -1173,6 +1163,7 @@ async def setup_economy(bot: commands.Bot):
         dealer_hand = [draw_card(deck), draw_card(deck)]
 
         game = BlackjackGame(
+            guild_id=interaction.guild.id,
             user_id=interaction.user.id,
             channel_id=interaction.channel_id,
             bet=bet,
@@ -1199,9 +1190,11 @@ async def setup_economy(bot: commands.Bot):
         game.message_id = msg.id
         ACTIVE_GAMES_BY_MESSAGE[msg.id] = game
 
-    @economy_group.command(name="addcoins", description="Thêm Slime Coin cho một người (chỉ chủ bot)")
-    @app_commands.describe(member="Người nhận", amount="Số Slime Coin muốn thêm")
+    @economy_group.command(name="addcoins", description=f"Thêm {CURRENCY_ICON} Slime Coin cho một người (chỉ chủ bot)")
+    @app_commands.describe(member="Người nhận", amount=f"Số {CURRENCY_ICON} Slime Coin muốn thêm")
     async def addcoins(interaction: discord.Interaction, member: discord.Member, amount: int):
+        if interaction.guild is None:
+            return await interaction.response.send_message("❌ Chỉ dùng trong server.", ephemeral=True)
         if interaction.user.id != BOT_OWNER_ID:
             return await interaction.response.send_message(
                 "❌ Chỉ chủ bot mới dùng được lệnh này.",
@@ -1214,8 +1207,8 @@ async def setup_economy(bot: commands.Bot):
         if member.bot:
             return await interaction.response.send_message(f"❌ Không thể thêm {CURRENCY_NAME} cho bot.", ephemeral=True)
 
-        await add_balance(member.id, amount)
-        balance_now = await get_balance(member.id)
+        await add_balance(interaction.guild.id, member.id, amount)
+        balance_now = await get_balance(interaction.guild.id, member.id)
 
         await interaction.response.send_message(
             f"✅ Đã thêm **{amount}** {CURRENCY_ICON} {CURRENCY_NAME} cho {member.mention}.\n"

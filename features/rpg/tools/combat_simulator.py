@@ -2,6 +2,8 @@ import random
 from dataclasses import dataclass
 from typing import Optional
 
+from features.emoji_registry import rarity_icon as rarity_icon_token
+
 from ..data import (
     ITEMS, MONSTERS, BOSS_VARIANTS,
     RPG_CRIT_CHANCE, RPG_CRIT_MULT, RPG_DAMAGE_VAR_MIN, RPG_DAMAGE_VAR_MAX,
@@ -271,12 +273,12 @@ def print_balance_report(player_level: int = 10, runs: int = 1000) -> None:
     
     for r in results:
         status_emoji = {
-            "TOO EASY": "🟢",
-            "EASY": "🟢",
-            "BALANCED": "🟡",
-            "HARD": "🔴",
-            "TOO HARD": "🔴",
-        }.get(r["status"], "⚪")
+            "TOO EASY": rarity_icon_token("uncommon"),
+            "EASY": rarity_icon_token("uncommon"),
+            "BALANCED": rarity_icon_token("legendary"),
+            "HARD": rarity_icon_token("mythic"),
+            "TOO HARD": rarity_icon_token("mythic"),
+        }.get(r["status"], rarity_icon_token("common"))
         
         print(f"\n{status_emoji} {r['monster']}")
         print(f"   HP: {r['monster_hp']} | ATK: {r['monster_atk']} | DEF: {r['monster_def']}")

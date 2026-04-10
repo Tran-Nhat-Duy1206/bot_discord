@@ -387,6 +387,35 @@ async def _db_init():
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_combat_streaks (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                current_streak INTEGER NOT NULL DEFAULT 0,
+                best_streak INTEGER NOT NULL DEFAULT 0,
+                last_result_win INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(guild_id, user_id, mode)
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guild_boss_damage (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                boss_id TEXT NOT NULL DEFAULT '',
+                total_damage INTEGER NOT NULL DEFAULT 0,
+                last_damage INTEGER NOT NULL DEFAULT 0,
+                battles INTEGER NOT NULL DEFAULT 0,
+                wins INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(guild_id, user_id)
+            )
+            """
+        )
         try:
             await conn.execute("ALTER TABLE combat_telemetry ADD COLUMN total_turns INTEGER NOT NULL DEFAULT 0")
         except Exception:
@@ -478,6 +507,8 @@ async def _db_init():
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_kills_total ON monsters_killed(guild_id, user_id, kills DESC)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_jackpot_hits ON slime_jackpot_stats(guild_id, jackpot_hits DESC)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_combat_telemetry_mode ON combat_telemetry(guild_id, mode)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_combat_streaks_mode ON player_combat_streaks(guild_id, mode, current_streak DESC)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_guild_boss_damage_rank ON guild_boss_damage(guild_id, total_damage DESC, wins DESC)")
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rpg_transfers_daily ON rpg_transfers(guild_id, sender_user_id, receiver_user_id, created_at)"
         )
@@ -560,7 +591,7 @@ async def _seed_characters():
                     char_data["speed"],
                     char_data["gender"],
                     char_data.get("passive_skill", ""),
-                    char_data.get("image_url", ""),
+                    char_data.get("image", char_data.get("image_url", "IMAGE_URL_HERE")),
                 ),
             )
         await conn.commit()

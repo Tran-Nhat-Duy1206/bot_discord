@@ -190,7 +190,7 @@ CHARACTERS = {
     "gobta_goblin": {
         "name": "Gobta", "form": "Goblin Guard", "rarity": "common", "role": "support", "species": "goblin",
         "form_index": 1, "evolution_line": "gobta", "gender": "male",
-        "hp": 95, "attack": 12, "defense": 9, "speed": 13, "passive_skill": "lucky_slacker", "emoji": "🟢",
+        "hp": 95, "attack": 12, "defense": 9, "speed": 13, "passive_skill": "lucky_slacker", "emoji": ":uncommon:",
     },
     "gobta_hobgoblin": {
         "name": "Gobta", "form": "Hobgoblin Scout", "rarity": "rare", "role": "dps", "species": "hobgoblin",
@@ -217,7 +217,7 @@ CHARACTERS = {
     "goblin_scout": {
         "name": "Goblin", "form": "Scout", "rarity": "common", "role": "support", "species": "goblin",
         "form_index": 2, "evolution_line": "goblin_generic", "gender": "none",
-        "hp": 76, "attack": 9, "defense": 8, "speed": 13, "passive_skill": "lucky_slacker", "emoji": "🟢",
+        "hp": 76, "attack": 9, "defense": 8, "speed": 13, "passive_skill": "lucky_slacker", "emoji": ":uncommon:",
     },
     "hobgoblin_vanguard": {
         "name": "Hobgoblin", "form": "Vanguard", "rarity": "rare", "role": "tank", "species": "hobgoblin",
@@ -359,7 +359,7 @@ CHARACTERS = {
     "testarossa_primordial": {
         "name": "Testarossa", "form": "Primordial White", "rarity": "legendary", "role": "support", "species": "primordial",
         "form_index": 2, "evolution_line": "testarossa", "gender": "female",
-        "hp": 252, "attack": 41, "defense": 26, "speed": 29, "passive_skill": "void_authority", "emoji": "⚪",
+        "hp": 252, "attack": 41, "defense": 26, "speed": 29, "passive_skill": "void_authority", "emoji": ":common:",
     },
     "testarossa_awakened": {
         "name": "Testarossa", "form": "Awakened Primordial", "rarity": "mythic", "role": "support", "species": "ultimate",
@@ -369,7 +369,7 @@ CHARACTERS = {
     "ultima_demon": {
         "name": "Ultima", "form": "Demon", "rarity": "epic", "role": "dps", "species": "demon",
         "form_index": 1, "evolution_line": "ultima", "gender": "female",
-        "hp": 176, "attack": 32, "defense": 17, "speed": 25, "passive_skill": "hell_flame", "emoji": "🟣",
+        "hp": 176, "attack": 32, "defense": 17, "speed": 25, "passive_skill": "hell_flame", "emoji": ":Epic:",
     },
     "ultima_primordial": {
         "name": "Ultima", "form": "Primordial Violet", "rarity": "legendary", "role": "dps", "species": "primordial",
@@ -379,12 +379,12 @@ CHARACTERS = {
     "ultima_awakened": {
         "name": "Ultima", "form": "Awakened Primordial", "rarity": "mythic", "role": "dps", "species": "ultimate",
         "form_index": 3, "evolution_line": "ultima", "gender": "female",
-        "hp": 304, "attack": 57, "defense": 30, "speed": 36, "passive_skill": "flame_sovereign", "emoji": "🟣",
+        "hp": 304, "attack": 57, "defense": 30, "speed": 36, "passive_skill": "flame_sovereign", "emoji": ":Epic:",
     },
     "carrera_demon": {
         "name": "Carrera", "form": "Demon", "rarity": "epic", "role": "dps", "species": "demon",
         "form_index": 1, "evolution_line": "carrera", "gender": "female",
-        "hp": 182, "attack": 33, "defense": 18, "speed": 24, "passive_skill": "hell_flame", "emoji": "🟡",
+        "hp": 182, "attack": 33, "defense": 18, "speed": 24, "passive_skill": "hell_flame", "emoji": ":legends:",
     },
     "carrera_primordial": {
         "name": "Carrera", "form": "Primordial Yellow", "rarity": "legendary", "role": "dps", "species": "primordial",
@@ -394,7 +394,7 @@ CHARACTERS = {
     "carrera_awakened": {
         "name": "Carrera", "form": "Awakened Primordial", "rarity": "mythic", "role": "dps", "species": "ultimate",
         "form_index": 3, "evolution_line": "carrera", "gender": "female",
-        "hp": 312, "attack": 58, "defense": 31, "speed": 35, "passive_skill": "void_authority", "emoji": "🟡",
+        "hp": 312, "attack": 58, "defense": 31, "speed": 35, "passive_skill": "void_authority", "emoji": ":legends:",
     },
 
     "hinata_holy_knight": {
@@ -645,6 +645,12 @@ CHARACTERS = {
         "hp": 360, "attack": 65, "defense": 42, "speed": 36, "passive_skill": "void_authority", "emoji": "🌌",
     },
 }
+
+
+DEFAULT_CHARACTER_IMAGE_URL = "IMAGE_URL_HERE"
+for _char in CHARACTERS.values():
+    if isinstance(_char, dict):
+        _char.setdefault("image", DEFAULT_CHARACTER_IMAGE_URL)
 
 
 CHARACTER_RARITY = {

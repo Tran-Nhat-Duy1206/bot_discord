@@ -1,5 +1,7 @@
 import random
+import re
 import time
+import logging
 from collections import defaultdict, deque
 from typing import Optional
 
@@ -7,14 +9,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from features.emoji_registry import CURRENCY_ICON, XP_ICON, RPG_EMOJI_ALIASES, RARITY_ICONS
+
 from language import resolve_lang, resolve_lang_ctx, tr
 
-from .utils.assets import apply_embed_asset, apply_item_asset, reload_assets
 from .data import (
     ITEMS,
     CRAFT_RECIPES,
     SKILLS,
     CHARACTERS,
+    BOSS_VARIANTS,
+    RPG_BOSS_COOLDOWN,
     GACHA_COST,
     GACHA_BANNERS,
     SOFT_PITY,
@@ -43,6 +48,17 @@ from .services.economy_service import EconomyService
 from .services.quest_service import QuestService
 from .services.player_service import PlayerService
 from .services.dungeon_run_service import DungeonRunService
+from .combat.equipment import equipped_profile
+from .rendering import (
+    convert_combat_result_to_battle_data,
+    render_guild_boss_image,
+    render_battle_card,
+    render_dungeon_card,
+    render_gacha_card,
+    render_shop_card,
+    render_team_card,
+)
+from .repositories import telemetry_repo
 
 from .shop import ShopCategory, get_items_by_category, get_shop_categories
 from .ui_theme import hp_bar, panel_embed, progress_bar, rarity_icon, role_icon, split_formation
@@ -53,11 +69,13 @@ RPG_COMMAND_RATE_USER_WINDOW = 20
 RPG_COMMAND_RATE_GUILD_MAX = 120
 RPG_COMMAND_RATE_GUILD_WINDOW = 20
 
+logger = logging.getLogger("bot.rpg")
+
 _USER_RATE_BUCKET: dict[int, deque[float]] = defaultdict(deque)
 _GUILD_RATE_BUCKET: dict[int, deque[float]] = defaultdict(deque)
 
 RPG_COMMAND_NAMES = {
-    "rpg_assets_reload", "rpg_start", "profile", "stats", "rpg_balance",
+    "rpg_start", "profile", "stats",
     "rpg_daily", "rpg_pay", "rpg_shop", "rpg_shop_category",
     "craft_list", "craft",
     "rpg_buy", "rpg_sell", "rpg_inventory", "rpg_equipment",
@@ -81,10 +99,6 @@ def _member_or_self(interaction: discord.Interaction, member: Optional[discord.M
 def _item_label(item_id: str) -> str:
     item = ITEMS.get(item_id, {"name": item_id, "emoji": "📦"})
     return f"{item['emoji']} {item['name']}"
-
-
-def _collect_files(*files: discord.File | None) -> list[discord.File]:
-    return [f for f in files if f is not None]
 
 
 async def _lang_for_ctx(ctx: commands.Context) -> str:
@@ -154,13 +168,20 @@ def _build_shop_main_embed(lang: str) -> discord.Embed:
     )
     rows = []
     for cat in get_shop_categories():
-        cid = str(cat.get("id", ""))
-        name = str(cat.get("name", cid))
+        name = str(cat.get("name", ""))
         emoji = str(cat.get("emoji", "📦"))
         desc = str(cat.get("desc", ""))
-        command_key = "blackmarket" if cid == ShopCategory.BLACK_MARKET else cid
-        rows.append(f"{emoji} **{name}**\n`/shop {command_key}` • {desc}")
+        rows.append(f"{emoji} **{name}**\n{desc}")
     e.add_field(name="📂 Market Wings", value="\n\n".join(rows), inline=False)
+    e.add_field(
+        name="🧭 Quick Select",
+        value=(
+            "Use the buttons below to switch between shop wings instantly."
+            if lang == "en"
+            else "Dùng các nút bên dưới để chuyển nhanh giữa các khu shop."
+        ),
+        inline=False,
+    )
     e.add_field(
         name="⚒️ Trade Commands",
         value="`/rpg_buy <item> [amount]`\n`/rpg_sell <item> [amount] [location]`\n`/craft <recipe_id> [amount]`",
@@ -193,25 +214,138 @@ def _build_shop_category_embed(category: str, lang: str) -> discord.Embed:
         e.add_field(name="Stock", value=empty, inline=False)
         return e
 
-    grouped: dict[str, list] = defaultdict(list)
+    rarity_order = ("mythic", "legendary", "epic", "rare", "uncommon", "common")
+    rarity_counts: dict[str, int] = {r: 0 for r in rarity_order}
     for item in items:
-        grouped[str(getattr(item, "rarity", "common")).lower()].append(item)
+        rarity_counts[str(getattr(item, "rarity", "common")).lower()] = rarity_counts.get(str(getattr(item, "rarity", "common")).lower(), 0) + 1
 
-    for rarity in ("mythic", "legendary", "epic", "rare", "uncommon", "common"):
-        rows = grouped.get(rarity, [])
-        if not rows:
-            continue
-        lines = []
-        for item in rows[:8]:
-            item_id = str(getattr(item, "id", ""))
-            name = str(getattr(item, "name", item_id))
-            emoji = str(getattr(item, "emoji", "📦"))
-            buy_price = int(getattr(item, "buy_price", 0) or 0)
-            tag_text = _shop_item_tags(item)
-            lines.append(f"{emoji} **{name}** (`{item_id}`)\n└ 💰 `{buy_price:,}`{tag_text}")
-        e.add_field(name=f"{rarity_icon(rarity)} {rarity.title()}", value="\n".join(lines), inline=False)
+    total_items = len(items)
+    highlighted = rarity_counts.get("mythic", 0) + rarity_counts.get("legendary", 0) + rarity_counts.get("epic", 0)
+    rarity_line = " | ".join(
+        f"{rarity_icon(r)} {r.title()} {rarity_counts.get(r, 0)}"
+        for r in rarity_order
+        if rarity_counts.get(r, 0) > 0
+    )
+
+    if c == ShopCategory.BLACK_MARKET:
+        display_text = (
+            "Player-driven listings are rendered as RPG market cards in the attached image."
+            if lang == "en"
+            else "Danh sach nguoi choi dang ban duoc hien thi dang the card RPG o anh ben duoi."
+        )
+    else:
+        display_text = (
+            "Items are displayed as visual inventory cards in the attached image."
+            if lang == "en"
+            else "Vat pham duoc hien thi bang the inventory truc quan o anh ben duoi."
+        )
+
+    stats_text = (
+        f"Total `{total_items}` • High-tier `{highlighted}`\n{rarity_line}"
+        if lang == "en"
+        else f"Tong `{total_items}` • Bac cao `{highlighted}`\n{rarity_line}"
+    )
+
+    e.add_field(name="Display" if lang == "en" else "Hien thi", value=display_text, inline=False)
+    e.add_field(name="Stock Snapshot" if lang == "en" else "Tong quan kho", value=stats_text, inline=False)
 
     return e
+
+
+def _shop_rarity_rank(rarity: str) -> int:
+    order = {
+        "mythic": 5,
+        "legendary": 4,
+        "epic": 3,
+        "rare": 2,
+        "uncommon": 1,
+        "common": 0,
+    }
+    return order.get(str(rarity or "common").lower(), -1)
+
+
+def _build_shop_main_card_payload() -> list[dict]:
+    rows: list[dict] = []
+    for cat in get_shop_categories():
+        cid = str(cat.get("id", ""))
+        rows.append(
+            {
+                "id": cid,
+                "name": str(cat.get("name", cid)),
+                "emoji": str(cat.get("emoji", "📦")),
+                "desc": str(cat.get("desc", "")),
+                "count": len(get_items_by_category(cid)),
+            }
+        )
+    return rows
+
+
+def _build_shop_items_card_payload(category: str) -> list[dict]:
+    c = _normalize_shop_category_input(category)
+    source = list(get_items_by_category(c))
+    rows: list[dict] = []
+    source.sort(
+        key=lambda item: (
+            -_shop_rarity_rank(str(getattr(item, "rarity", "common"))),
+            -int(getattr(item, "buy_price", 0) or 0),
+            str(getattr(item, "name", "")),
+        )
+    )
+    for idx, item in enumerate(source[:12]):
+        sell_price = int(getattr(item, "sell_price", 0) or 0)
+        desc = str(getattr(item, "desc", "") or "").strip()
+        rows.append(
+            {
+                "id": str(getattr(item, "id", "")),
+                "name": str(getattr(item, "name", "")),
+                "emoji": str(getattr(item, "emoji", "📦")),
+                "rarity": str(getattr(item, "rarity", "common")).lower(),
+                "buy_price": int(getattr(item, "buy_price", 0) or 0),
+                "sell_price": sell_price,
+                "black_market_sell": int(sell_price * 0.6),
+                "subtitle": desc,
+                "quantity": 1,
+                "selected": idx == 0,
+            }
+        )
+        if c == ShopCategory.BLACK_MARKET:
+            rows[-1]["seller_name"] = str(getattr(item, "seller_name", "Player Vendor"))
+            rows[-1]["stock"] = int(getattr(item, "stock", 3) or 0)
+    return rows
+
+
+async def _build_shop_embed_and_card(
+    category: str,
+    guild: discord.Guild | None,
+    lang: str,
+) -> tuple[discord.Embed, discord.File | None]:
+    c = _normalize_shop_category_input(category)
+    embed = _build_shop_category_embed(c, lang)
+    if guild is None:
+        return embed, None
+
+    card_file: discord.File | None = None
+    if c == "main":
+        card_buffer = await render_shop_card(
+            category="main",
+            items=[],
+            guild=guild,
+            categories=_build_shop_main_card_payload(),
+            lang=lang,
+        )
+    else:
+        card_buffer = await render_shop_card(
+            category=c,
+            items=_build_shop_items_card_payload(c),
+            guild=guild,
+            categories=None,
+            lang=lang,
+        )
+
+    if card_buffer is not None:
+        card_file = discord.File(fp=card_buffer, filename="shop_card.png")
+        embed.set_image(url="attachment://shop_card.png")
+    return embed, card_file
 
 
 def _build_inventory_embed(target: discord.Member, items: list[tuple[str, int]], lang: str) -> discord.Embed:
@@ -290,6 +424,17 @@ _QUEST_NAME_VI = {
     "open_lootbox": "Lượt mở lootbox",
 }
 
+_QUEST_ICON = {
+    "team_hunt_runs": "⚔️",
+    "team_hunt_clears": "🎯",
+    "team_dungeon_clears": "🏰",
+    "summon_times": "🎫",
+    "use_healer_battles": ":Healer:",
+    "boss_wins": "👑",
+    "kill_slime": "🟢",
+    "open_lootbox": "💎",
+}
+
 
 def _build_skills_embed(level: int, unlocked: list[str], lang: str) -> discord.Embed:
     e = panel_embed(
@@ -309,7 +454,7 @@ def _build_skills_embed(level: int, unlocked: list[str], lang: str) -> discord.E
         elif level < req:
             status = f"🔒 Need Lv {req}"
         else:
-            status = "🟡 Ready"
+            status = ":legends: Ready"
         groups[stype].append(f"`{sid}` • **{name}**\n{desc}\n{status}")
 
     e.add_field(name="Passive Techniques", value="\n\n".join(groups.get("passive", ["(none)"])[:6]), inline=False)
@@ -317,55 +462,74 @@ def _build_skills_embed(level: int, unlocked: list[str], lang: str) -> discord.E
     return e
 
 
-def _build_quest_board_embed(quests, lang: str) -> discord.Embed:
+def _build_quest_board_embed(quests, owner_name: str | None = None, lang: str = "en") -> discord.Embed:
     names = _QUEST_NAME_VI if str(lang).lower().startswith("vi") else _QUEST_NAME_EN
-    e = panel_embed(
-        mode="Mission Board",
-        title="📜 Mission Board",
-        description=("Track squad objectives and claim operation rewards." if lang == "en" else "Theo dõi nhiệm vụ đội hình và nhận thưởng hành động."),
-        theme="team",
-    )
+    owner = str(owner_name or ("Bạn" if str(lang).lower().startswith("vi") else "Player"))
+    is_vi = str(lang).lower().startswith("vi")
 
-    locked: list[str] = []
-    ready: list[str] = []
-    progress: list[str] = []
-    claimed: list[str] = []
+    def _hms_upper(secs: int) -> str:
+        total = max(0, int(secs))
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        return f"{h}H {m}M {s}S"
 
-    now = int(time.time())
-    for q in quests:
+    def _quest_line(q, now_ts: int) -> str:
         qid = str(getattr(q, "quest_id", ""))
         obj = str(getattr(q, "objective", ""))
         target = int(getattr(q, "target", 0) or 0)
         prog = int(getattr(q, "progress", 0) or 0)
-        reward_gold = int(getattr(q, "reward_gold", 0) or 0)
-        reward_xp = int(getattr(q, "reward_xp", 0) or 0)
         reset_after = int(getattr(q, "reset_after", 0) or 0)
-        period = str(getattr(q, "period", ""))
-        period_text = ""
-        if period in {"daily", "weekly"} and reset_after > now:
-            period_text = f" • reset <t:{reset_after}:R>"
         title = names.get(obj, obj)
-        line = f"`{qid}` • **{title}** {prog}/{target}\n🏆 {reward_gold} SC + {reward_xp} XP{period_text}"
-
+        icon = _QUEST_ICON.get(obj, "📜")
         is_locked = bool(getattr(q, "is_locked", False))
         is_claimed = bool(getattr(q, "claimed", False))
-        if is_locked:
-            locked.append(line)
-        elif is_claimed:
-            claimed.append(line)
-        elif prog >= target:
-            ready.append(line)
-        else:
-            progress.append(line)
 
-    if ready:
-        e.add_field(name="🎯 Ready to Claim", value="\n\n".join(ready[:4]), inline=False)
-    if progress:
-        e.add_field(name="⏳ In Progress", value="\n\n".join(progress[:4]), inline=False)
-    if locked:
-        e.add_field(name="🔒 Locked", value="\n\n".join(locked[:3]), inline=False)
-    if claimed:
-        e.add_field(name="✅ Claimed", value="\n\n".join(claimed[:3]), inline=False)
+        if is_locked:
+            prereq = str(getattr(q, "prereq_quest_id", "") or "")
+            text = (f"{title} đang bị khóa (cần `{prereq}`)." if is_vi else f"{title} is locked (need `{prereq}`).")
+            mark = "⬛"
+        elif is_claimed:
+            text = (f"{title} đã nhận thưởng." if is_vi else f"{title} is already claimed.")
+            mark = "☑️"
+        elif prog >= target:
+            text = (f"{title} có thể nhận ngay." if is_vi else f"{title} is ready to claim.")
+            mark = "⬛"
+        else:
+            text = f"{title} ({prog}/{target})"
+            mark = "⬛"
+
+        if reset_after > now_ts:
+            text += f" • <t:{reset_after}:R>"
+        return f"{mark} {icon} {text} • `{qid}`"
+
+    now = int(time.time())
+    lines = [_quest_line(q, now) for q in quests]
+    completed = sum(1 for q in quests if bool(getattr(q, "claimed", False)))
+    all_done = bool(quests) and completed == len(quests)
+    lines.append(
+        f"{'☑️' if all_done else '⬛'} 🎉 "
+        + ("Hoàn tất checklist để nhận thưởng tổng!" if is_vi else "Complete your checklist to get a reward!")
+    )
+
+    reset_targets = [
+        int(getattr(q, "reset_after", 0) or 0)
+        for q in quests
+        if str(getattr(q, "period", "")) in {"daily", "weekly"} and int(getattr(q, "reset_after", 0) or 0) > now
+    ]
+    if reset_targets:
+        next_reset = min(reset_targets)
+        remain = max(0, next_reset - now)
+        lines.append("")
+        lines.append(
+            (f"Resets in {_hms_upper(remain)} • <t:{next_reset}:t>" if not is_vi else f"Reset sau {_hms_upper(remain)} • <t:{next_reset}:t>")
+        )
+
+    e = panel_embed(
+        mode="Mission Board",
+        title=(f"{owner}'s Checklist" if not is_vi else f"Checklist của {owner}"),
+        description="\n".join(lines),
+        theme="team",
+    )
     return e
 
 
@@ -385,7 +549,7 @@ def _build_craft_recipes_embed(lang: str) -> discord.Embed:
         gold = int(r.get("gold", 0))
         out = r.get("output", {}) or {}
         out_txt = ", ".join(f"{_item_label(str(k))} x{int(v)}" for k, v in out.items()) if out else "(none)"
-        rows.append(f"`{rid}` • **{name}**\nNeed: {req_txt}\nCost: {gold} SC\nOutput: {out_txt}")
+        rows.append(f"`{rid}` • **{name}**\nNeed: {req_txt}\nCost: {gold} {CURRENCY_ICON}\nOutput: {out_txt}")
     e.add_field(name="Available Blueprints", value="\n\n".join(rows[:8]) if rows else "(none)", inline=False)
     return e
 
@@ -508,7 +672,7 @@ def _build_dungeon_node_result_embed(result, lang: str) -> discord.Embed:
     e.add_field(name=tr(lang, "rpg.dungeon.field.outcome"), value=(tr(lang, "rpg.dungeon.victory") if bool(r.get("win", True)) else tr(lang, "rpg.dungeon.defeat")), inline=True)
     if r.get("rewards"):
         rw = r.get("rewards", {})
-        e.add_field(name=tr(lang, "rpg.dungeon.field.rewards"), value=f"+{int(rw.get('gold', 0))} SC • +{int(rw.get('xp', 0))} XP", inline=False)
+        e.add_field(name=tr(lang, "rpg.dungeon.field.rewards"), value=f"+{int(rw.get('gold', 0))} {CURRENCY_ICON} • +{int(rw.get('xp', 0))} {XP_ICON}", inline=False)
     if r.get("delta"):
         e.add_field(name=tr(lang, "rpg.dungeon.field.delta"), value=str(r.get("delta")), inline=False)
     if r.get("event"):
@@ -529,7 +693,7 @@ def _build_dungeon_finish_embed(result, lang: str) -> discord.Embed:
     e.add_field(name=tr(lang, "rpg.dungeon.field.score"), value=f"{result.score}", inline=True)
     e.add_field(name=tr(lang, "rpg.dungeon.field.rank_points"), value=f"+{result.rank_points}", inline=True)
     e.add_field(name=tr(lang, "rpg.dungeon.field.status"), value=f"{str(result.status).title()}", inline=True)
-    e.add_field(name=tr(lang, "rpg.dungeon.field.gold_xp"), value=f"+{int(rewards.get('gold', 0))} SC • +{int(rewards.get('xp', 0))} XP", inline=False)
+    e.add_field(name=tr(lang, "rpg.dungeon.field.gold_xp"), value=f"+{int(rewards.get('gold', 0))} {CURRENCY_ICON} • +{int(rewards.get('xp', 0))} {XP_ICON}", inline=False)
     items = rewards.get("items", {}) if isinstance(rewards.get("items"), dict) else {}
     if items:
         e.add_field(name=tr(lang, "rpg.dungeon.field.drops"), value=", ".join(f"{_item_label(k)} x{v}" for k, v in items.items()), inline=False)
@@ -537,6 +701,250 @@ def _build_dungeon_finish_embed(result, lang: str) -> discord.Embed:
     if shards:
         e.add_field(name=tr(lang, "rpg.dungeon.field.shards"), value=", ".join(f"{k} x{v}" for k, v in shards.items()), inline=False)
     return e
+
+
+def _dungeon_units_for_card(units: list[dict]) -> list[dict]:
+    rows: list[dict] = []
+    for u in (units or [])[:5]:
+        if not isinstance(u, dict):
+            continue
+        cid = str(u.get("character_id", "") or "")
+        meta = CHARACTERS.get(cid, {})
+        name = str(meta.get("name", cid or "Unit"))
+        form = str(meta.get("form", ""))
+        display_name = f"{name} [{form}]" if form else name
+        rows.append(
+            {
+                "name": display_name,
+                "emoji": str(meta.get("emoji", "") or ""),
+                "hp": int(u.get("hp", 0) or 0),
+                "max_hp": max(1, int(u.get("max_hp", 1) or 1)),
+                "alive": bool(u.get("alive", False)),
+            }
+        )
+    return rows
+
+
+def _dungeon_reward_lines(rewards: dict, lang: str) -> list[str]:
+    out: list[str] = []
+    rw = rewards if isinstance(rewards, dict) else {}
+    gold = int(rw.get("gold", 0) or 0)
+    xp = int(rw.get("xp", 0) or 0)
+    rank = int(rw.get("rank_points", 0) or 0)
+    if gold > 0 or xp > 0:
+        out.append(f"+{gold} {CURRENCY_ICON}  +{xp} {XP_ICON}")
+    if rank > 0:
+        out.append(f"+{rank} rank points")
+
+    items = rw.get("items", {}) if isinstance(rw.get("items", {}), dict) else {}
+    for item_id, amount in list(items.items())[:4]:
+        if int(amount) <= 0:
+            continue
+        item = ITEMS.get(str(item_id), {})
+        out.append(f"{item.get('emoji', '📦')} {item.get('name', item_id)} x{int(amount)}")
+
+    shards = rw.get("shards", {}) if isinstance(rw.get("shards", {}), dict) else {}
+    for shard_id, amount in list(shards.items())[:3]:
+        if int(amount) <= 0:
+            continue
+        out.append(f"🧩 {shard_id} x{int(amount)}")
+    return out
+
+
+def _dungeon_start_card_payload(result, state, lang: str) -> dict:
+    data = result.entry_embed_data if isinstance(getattr(result, "entry_embed_data", {}), dict) else {}
+    mods = data.get("global_modifiers", []) if isinstance(data.get("global_modifiers", []), list) else []
+    detail_lines = [
+        f"Difficulty: {str(data.get('difficulty', 'normal')).title()}",
+        f"Floors: 1/{int(data.get('total_floors', 12) or 12)}",
+        f"Boss family: {str(data.get('boss_family', 'unknown'))}",
+    ]
+    for m in mods[:3]:
+        detail_lines.append(f"Global mod: {str(m.get('mod_id', 'modifier'))}")
+    detail_lines.append("Next: Choose a path to begin.")
+
+    units = _dungeon_units_for_card(getattr(state, "units", []) if state is not None else [])
+    return {
+        "mode": "start",
+        "title": tr(lang, "rpg.dungeon.entry_title"),
+        "subtitle": tr(lang, "rpg.dungeon.entry_desc"),
+        "run_id": str(getattr(result, "run_id", "")),
+        "difficulty": str(data.get("difficulty", "normal")),
+        "floor": 1,
+        "total_floors": int(data.get("total_floors", 12) or 12),
+        "phase": "selecting_path",
+        "boss_family": str(data.get("boss_family", "unknown")),
+        "units": units,
+        "detail_lines": detail_lines,
+    }
+
+
+def _dungeon_state_card_payload(state, lang: str) -> dict:
+    detail_lines: list[str] = []
+    phase = str(getattr(state, "phase", ""))
+    if phase == "selecting_path":
+        unresolved = [n for n in (getattr(state, "nodes", []) or []) if isinstance(n, dict) and not bool(n.get("resolved", False))]
+        for n in unresolved[:6]:
+            nid = str(n.get("node_id", ""))
+            ntype = str(n.get("node_type", "combat"))
+            danger = int(n.get("danger", 1) or 1)
+            detail_lines.append(f"{_dungeon_node_icon(ntype)} {nid} | {ntype} | danger {danger}")
+        if not detail_lines:
+            detail_lines.append("No available nodes.")
+    elif phase == "choice":
+        options = getattr(state, "pending_choice", {}).get("options", []) if isinstance(getattr(state, "pending_choice", {}), dict) else []
+        for o in options[:4]:
+            cid = str(o.get("choice_id", ""))
+            title = str(o.get("title", cid))
+            tradeoff = str(o.get("tradeoff", ""))
+            detail_lines.append(f"{cid}: {title}")
+            if tradeoff:
+                detail_lines.append(f"  {tradeoff}")
+        if not detail_lines:
+            detail_lines.append("No strategic options.")
+    elif phase == "resolving_node":
+        detail_lines.append("Resolving current node. Refresh for outcome.")
+    elif phase == "claimable":
+        detail_lines.append("Run is claimable. Use claim to collect rewards.")
+    else:
+        detail_lines.append("Review run status and continue operation.")
+
+    return {
+        "mode": "status",
+        "title": tr(lang, "rpg.dungeon.status_title", floor=getattr(state, "floor", 1), total=getattr(state, "total_floors", 12)),
+        "subtitle": tr(lang, "rpg.dungeon.status_desc"),
+        "run_id": str(getattr(state, "run_id", "")),
+        "difficulty": str(getattr(state, "difficulty", "normal")),
+        "floor": int(getattr(state, "floor", 1) or 1),
+        "total_floors": int(getattr(state, "total_floors", 12) or 12),
+        "phase": phase,
+        "score": int(getattr(state, "score", 0) or 0),
+        "risk_score": int(getattr(state, "risk_score", 0) or 0),
+        "supply": int(getattr(state, "supply", 0) or 0),
+        "fatigue": int(getattr(state, "fatigue", 0) or 0),
+        "corruption": int(getattr(state, "corruption", 0) or 0),
+        "units": _dungeon_units_for_card(getattr(state, "units", [])),
+        "detail_lines": detail_lines,
+    }
+
+
+def _dungeon_node_card_payload(result, state, lang: str) -> dict:
+    r = result.result if isinstance(getattr(result, "result", {}), dict) else {}
+    node_type = str(getattr(result, "node_type", "") or r.get("node_type", "combat"))
+    won = bool(r.get("win", True))
+
+    detail_lines = [
+        f"Node: {str(getattr(result, 'node_id', ''))} ({node_type})",
+        f"Outcome: {'Victory' if won else 'Defeat'}",
+        f"Next phase: {str(getattr(result, 'next_phase', ''))}",
+    ]
+    casualties = int(r.get("casualties", 0) or 0)
+    if casualties > 0:
+        detail_lines.append(f"Casualties: {casualties}")
+    if r.get("event"):
+        detail_lines.append(f"Event: {str(r.get('event'))}")
+    if r.get("delta"):
+        detail_lines.append(f"Delta: {str(r.get('delta'))}")
+
+    reward_lines = _dungeon_reward_lines(r.get("rewards", {}) if isinstance(r.get("rewards", {}), dict) else {}, lang)
+    detail_lines.extend(reward_lines[:7])
+
+    state_units = _dungeon_units_for_card(getattr(state, "units", [])) if state is not None else []
+    return {
+        "mode": "node",
+        "title": tr(lang, "rpg.dungeon.node_title", icon=_dungeon_node_icon(node_type), node_type=node_type),
+        "subtitle": tr(lang, "rpg.dungeon.node_desc"),
+        "run_id": str(getattr(result, "run_id", "")),
+        "difficulty": str(getattr(state, "difficulty", "normal")) if state is not None else "normal",
+        "floor": int(getattr(result, "floor", 1) or 1),
+        "total_floors": int(getattr(state, "total_floors", 12) or 12) if state is not None else 12,
+        "phase": str(getattr(result, "next_phase", "")),
+        "win": won,
+        "score": int(getattr(state, "score", 0) or 0) if state is not None else 0,
+        "risk_score": int(getattr(state, "risk_score", 0) or 0) if state is not None else 0,
+        "supply": int(getattr(state, "supply", 0) or 0) if state is not None else 0,
+        "fatigue": int(getattr(state, "fatigue", 0) or 0) if state is not None else 0,
+        "corruption": int(getattr(state, "corruption", 0) or 0) if state is not None else 0,
+        "units": state_units,
+        "detail_lines": detail_lines,
+    }
+
+
+def _dungeon_choice_card_payload(result, state, lang: str) -> dict:
+    rr = result.result if isinstance(getattr(result, "result", {}), dict) else {}
+    effect = rr.get("effect", {}) if isinstance(rr.get("effect", {}), dict) else {}
+    detail_lines = [
+        f"Choice: {str(getattr(result, 'choice_id', ''))}",
+        f"Title: {str(rr.get('title', 'Strategic Choice'))}",
+    ]
+    for k, v in list(effect.items())[:6]:
+        detail_lines.append(f"{k}: {v}")
+    if rr.get("ambush"):
+        detail_lines.append("Ambush triggered during scavenge.")
+    if rr.get("removed_curse"):
+        detail_lines.append(f"Removed curse: {str(rr.get('removed_curse'))}")
+
+    return {
+        "mode": "choice",
+        "title": tr(lang, "rpg.dungeon.choice_applied_title"),
+        "subtitle": tr(lang, "rpg.dungeon.choice_applied_desc", choice_id=getattr(result, "choice_id", "")),
+        "run_id": str(getattr(result, "run_id", "")),
+        "difficulty": str(getattr(state, "difficulty", "normal")) if state is not None else "normal",
+        "floor": int(getattr(state, "floor", 1) or 1) if state is not None else 1,
+        "total_floors": int(getattr(state, "total_floors", 12) or 12) if state is not None else 12,
+        "phase": str(getattr(result, "next_phase", "")),
+        "score": int(getattr(state, "score", 0) or 0) if state is not None else 0,
+        "risk_score": int(getattr(state, "risk_score", 0) or 0) if state is not None else 0,
+        "supply": int(getattr(state, "supply", 0) or 0) if state is not None else 0,
+        "fatigue": int(getattr(state, "fatigue", 0) or 0) if state is not None else 0,
+        "corruption": int(getattr(state, "corruption", 0) or 0) if state is not None else 0,
+        "units": _dungeon_units_for_card(getattr(state, "units", [])) if state is not None else [],
+        "detail_lines": detail_lines,
+    }
+
+
+def _dungeon_finish_card_payload(result, lang: str) -> dict:
+    rewards = result.rewards if isinstance(getattr(result, "rewards", {}), dict) else {}
+    detail_lines = [
+        f"Status: {str(getattr(result, 'status', 'completed')).title()}",
+        f"Score: {int(getattr(result, 'score', 0) or 0)}",
+        f"Rank points: +{int(getattr(result, 'rank_points', 0) or 0)}",
+    ]
+    detail_lines.extend(_dungeon_reward_lines(rewards, lang)[:10])
+    return {
+        "mode": "finish",
+        "title": tr(lang, "rpg.dungeon.finish_title", status=str(getattr(result, "status", "completed")).title()),
+        "subtitle": tr(lang, "rpg.dungeon.finish_desc"),
+        "run_id": str(getattr(result, "run_id", "")),
+        "difficulty": "-",
+        "floor": 0,
+        "total_floors": 0,
+        "phase": "claimable",
+        "status": str(getattr(result, "status", "completed")),
+        "score": int(getattr(result, "score", 0) or 0),
+        "risk_score": 0,
+        "supply": 0,
+        "fatigue": 0,
+        "corruption": 0,
+        "units": [],
+        "detail_lines": detail_lines,
+    }
+
+
+async def _attach_dungeon_card(
+    embed: discord.Embed,
+    payload: dict,
+    guild: discord.Guild | None,
+    lang: str,
+) -> discord.File | None:
+    if guild is None:
+        return None
+    card_buffer = await render_dungeon_card(payload, guild, lang=lang)
+    if card_buffer is None:
+        return None
+    card_file = discord.File(fp=card_buffer, filename="dungeon_card.png")
+    embed.set_image(url="attachment://dungeon_card.png")
+    return card_file
 
 
 async def _dungeon_status_with_pending_resolution(guild_id: int, user_id: int, lang: str):
@@ -748,6 +1156,29 @@ async def _profile_lore_meta(guild_id: int, user_id: int) -> dict:
     }
 
 
+async def _enrich_team_members_for_card(guild_id: int, user_id: int, team_members: list[dict]) -> list[dict]:
+    if not team_members:
+        return []
+
+    enriched: list[dict] = []
+    async with open_db() as conn:
+        for member in team_members[:5]:
+            m = dict(member)
+            cid = str(m.get("character_id", "") or "")
+            char_meta = CHARACTERS.get(cid, {})
+            m.setdefault("emoji", str(char_meta.get("emoji", "") or ""))
+            eq_profile = await equipped_profile(
+                conn,
+                guild_id,
+                user_id,
+                character_id=(cid or None),
+                fallback_legacy=bool(m.get("is_main", False)),
+            )
+            m["equipment"] = dict(eq_profile.get("equipped", {}))
+            enriched.append(m)
+    return enriched
+
+
 async def _try_ascend_mythic(conn, guild_id: int, user_id: int, legendary_id: str) -> str:
     c = CHARACTERS.get(str(legendary_id), {})
     if str(c.get("rarity", "")).lower() != "legendary":
@@ -809,9 +1240,6 @@ def _build_profile_embed(target: discord.Member, result, lore: dict, lang: str =
     eff_max_hp = result.max_hp
     hp_meter = hp_bar(eff_hp, eff_max_hp, 12)
     xp_meter = progress_bar(result.xp, result.xp_need, 12)
-    hunt_prog = int(lore.get("hunt_progress", 0))
-    hunt_target = int(lore.get("hunt_target", 5))
-    hunt_meter = progress_bar(hunt_prog, hunt_target, 12)
     team_hp = int(lore.get("team_hp", 0))
     team_atk = int(lore.get("team_atk", 0))
     team_def = int(lore.get("team_def", 0))
@@ -857,7 +1285,6 @@ def _build_profile_embed(target: discord.Member, result, lore: dict, lang: str =
         inline=True,
     )
     e.add_field(name="🩸 HP Status", value=f"**{eff_hp}/{eff_max_hp}**\n`{hp_meter}`", inline=True)
-    e.add_field(name="🏹 Hunt Progress", value=f"**{hunt_prog}/{hunt_target}**\n`{hunt_meter}`", inline=True)
     front, back = split_formation(team_members)
     no_team_text = "Không có đội hình" if lang == "vi" else "No active formation"
     e.add_field(name="🛡️ Frontline", value="\n".join(front) if front else no_team_text, inline=True)
@@ -1008,6 +1435,39 @@ class CombatDetailView(discord.ui.View):
                 pass
 
 
+class BossCombatView(CombatDetailView):
+    def __init__(self, guild_id: int, owner_user_id: int, combat_log: str, lang: str = "en", timeout: float = 180.0):
+        super().__init__(combat_log=combat_log, lang=lang, timeout=timeout)
+        self.guild_id = int(guild_id)
+        self.owner_user_id = int(owner_user_id)
+        self.fight_again.label = "⚔️ Engage" if self.lang == "en" else "⚔️ Vào trận"
+
+    @discord.ui.button(label="fight", style=discord.ButtonStyle.primary)
+    async def fight_again(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            lang = await resolve_lang(interaction)
+            return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
+
+        lang = await resolve_lang(interaction)
+        await interaction.response.defer()
+        embed, view, err, card_file = await handle_boss(
+            interaction.guild.id,
+            interaction.user.id,
+            interaction.user.display_name,
+            guild=interaction.guild,
+            lang=lang,
+        )
+        if err:
+            return await _rpg_followup_send(interaction, err, ephemeral=True)
+
+        if card_file is not None:
+            sent = await _rpg_followup_send(interaction, embed=embed, view=view, file=card_file, wait=True)
+        else:
+            sent = await _rpg_followup_send(interaction, embed=embed, view=view, wait=True)
+        if view is not None:
+            view.message = sent
+
+
 class TeamMemberDetailButton(discord.ui.Button):
     def __init__(self, member_data: dict, owner_name: str, lang: str = "en"):
         self.member_data = member_data
@@ -1021,7 +1481,11 @@ class TeamMemberDetailButton(discord.ui.Button):
             label = (f"👑 {name[:20]}") if self.lang == "en" else (f"👑 {name[:20]}")
         else:
             label = f"{icon} {name[:20]}"
-        super().__init__(label=label[:80], style=discord.ButtonStyle.secondary)
+        slot = int(member_data.get("slot", 0) or 0)
+        cid = str(member_data.get("character_id", "hero") or "hero").strip().lower()[:24]
+        main_flag = "m" if is_main else "s"
+        custom_id = f"rpg:hero_btn:{main_flag}:{slot}:{cid}"[:100]
+        super().__init__(label=label[:80], style=discord.ButtonStyle.secondary, custom_id=custom_id)
 
     async def callback(self, interaction: discord.Interaction):
         embed = _build_member_detail_embed(self.member_data, self.owner_name, lang=self.lang)
@@ -1042,7 +1506,7 @@ class TeamMemberSelect(discord.ui.Select):
             desc = f"Lv {int(m.get('level', 1) or 1)} • {str(m.get('rarity', 'common')).title()} • {str(m.get('form', 'Base'))}"
             options.append(discord.SelectOption(label=f"{name}"[:100], value=str(idx), description=desc[:100], emoji=prefix))
         placeholder = "🧾 Inspect Hero" if self.lang == "en" else "🧾 Xem Hero"
-        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options)
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options, custom_id="rpg:hero_select")
 
     async def callback(self, interaction: discord.Interaction):
         try:
@@ -1059,7 +1523,8 @@ class TeamMemberPageButton(discord.ui.Button):
     def __init__(self, direction: int):
         self.direction = -1 if direction < 0 else 1
         label = "◀" if self.direction < 0 else "▶"
-        super().__init__(label=label, style=discord.ButtonStyle.secondary)
+        custom_id = "rpg:hero_page:prev" if self.direction < 0 else "rpg:hero_page:next"
+        super().__init__(label=label, style=discord.ButtonStyle.secondary, custom_id=custom_id)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
@@ -1112,6 +1577,79 @@ class TeamMemberDetailView(discord.ui.View):
                 pass
 
 
+class ShopCategoryButton(discord.ui.Button):
+    def __init__(self, category: str, label: str, emoji: str):
+        self.category = _normalize_shop_category_input(category)
+        custom_id = f"rpg:shop:{self.category}"[:100]
+        super().__init__(label=label[:80], emoji=emoji, style=discord.ButtonStyle.secondary, custom_id=custom_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            lang = await resolve_lang(interaction)
+            return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
+
+        view = self.view
+        if not isinstance(view, ShopCategoryView):
+            return await interaction.response.defer()
+
+        lang = await resolve_lang(interaction)
+        view.current_category = self.category
+        view.refresh_styles()
+        embed, card_file = await _build_shop_embed_and_card(self.category, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.edit_message(embed=embed, view=view, attachments=[card_file])
+        else:
+            await interaction.response.edit_message(embed=embed, view=view, attachments=[])
+
+
+class ShopCategoryView(discord.ui.View):
+    def __init__(self, current_category: str = "main", lang: str = "en", timeout: float = 300.0):
+        super().__init__(timeout=timeout)
+        self.lang = "vi" if str(lang).lower().startswith("vi") else "en"
+        self.current_category = _normalize_shop_category_input(current_category)
+        self.message: Optional[discord.Message] = None
+        self._build_items()
+
+    def _category_buttons(self) -> list[tuple[str, str, str]]:
+        if self.lang == "vi":
+            return [
+                ("main", "Tong quan", "🛒"),
+                (ShopCategory.CONSUMABLES, "Tieu hao", "🧪"),
+                (ShopCategory.EQUIPMENT, "Trang bi", "⚔️"),
+                (ShopCategory.MATERIALS, "Vat lieu", "💎"),
+                (ShopCategory.BLACK_MARKET, "Cho den", "🌑"),
+            ]
+        return [
+            ("main", "Overview", "🛒"),
+            (ShopCategory.CONSUMABLES, "Consumables", "🧪"),
+            (ShopCategory.EQUIPMENT, "Equipment", "⚔️"),
+            (ShopCategory.MATERIALS, "Materials", "💎"),
+            (ShopCategory.BLACK_MARKET, "Black Market", "🌑"),
+        ]
+
+    def _build_items(self):
+        self.clear_items()
+        for cid, label, emoji in self._category_buttons():
+            self.add_item(ShopCategoryButton(cid, label, emoji))
+        self.refresh_styles()
+
+    def refresh_styles(self):
+        active = _normalize_shop_category_input(self.current_category)
+        for item in self.children:
+            if isinstance(item, ShopCategoryButton):
+                item.style = discord.ButtonStyle.primary if item.category == active else discord.ButtonStyle.secondary
+
+    async def on_timeout(self):
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+
 class DungeonNodeSelect(discord.ui.Select):
     def __init__(self, guild_id: int, user_id: int, lang: str, nodes: list[dict]):
         self.guild_id = int(guild_id)
@@ -1151,11 +1689,16 @@ class DungeonNodeSelect(discord.ui.Select):
             return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
         e = _build_dungeon_node_result_embed(result, self.lang)
         next_view = None
+        state = await DungeonRunService.get_state(self.guild_id, self.user_id, lang=self.lang)
         if result.next_phase in {"selecting_path", "choice", "resolving_node"}:
-            state = await DungeonRunService.get_state(self.guild_id, self.user_id, lang=self.lang)
             if state.ok:
                 next_view = DungeonControlView(self.guild_id, self.user_id, self.lang, state)
-        await interaction.response.edit_message(embed=e, view=next_view)
+        payload = _dungeon_node_card_payload(result, state if state.ok else None, self.lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, self.lang)
+        if card_file is not None:
+            await interaction.response.edit_message(embed=e, view=next_view, attachments=[card_file])
+        else:
+            await interaction.response.edit_message(embed=e, view=next_view, attachments=[])
 
 
 class DungeonChoiceSelect(discord.ui.Select):
@@ -1194,7 +1737,12 @@ class DungeonChoiceSelect(discord.ui.Select):
         )
         state = await DungeonRunService.get_state(self.guild_id, self.user_id, lang=self.lang)
         next_view = DungeonControlView(self.guild_id, self.user_id, self.lang, state) if state.ok else None
-        await interaction.response.edit_message(embed=e, view=next_view)
+        payload = _dungeon_choice_card_payload(result, state if state.ok else None, self.lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, self.lang)
+        if card_file is not None:
+            await interaction.response.edit_message(embed=e, view=next_view, attachments=[card_file])
+        else:
+            await interaction.response.edit_message(embed=e, view=next_view, attachments=[])
 
 
 class DungeonPathModal(discord.ui.Modal):
@@ -1216,7 +1764,13 @@ class DungeonPathModal(discord.ui.Modal):
         if not result.ok:
             return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
         e = _build_dungeon_node_result_embed(result, self.lang)
-        await interaction.response.send_message(embed=e, ephemeral=True)
+        state = await DungeonRunService.get_state(self.guild_id, self.user_id, lang=self.lang)
+        payload = _dungeon_node_card_payload(result, state if state.ok else None, self.lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, self.lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, file=card_file, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=e, ephemeral=True)
 
 
 class DungeonChoiceModal(discord.ui.Modal):
@@ -1243,7 +1797,13 @@ class DungeonChoiceModal(discord.ui.Modal):
             description=tr(self.lang, "rpg.dungeon.choice_applied_desc", choice_id=result.choice_id),
             theme="victory",
         )
-        await interaction.response.send_message(embed=e, ephemeral=True)
+        state = await DungeonRunService.get_state(self.guild_id, self.user_id, lang=self.lang)
+        payload = _dungeon_choice_card_payload(result, state if state.ok else None, self.lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, self.lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, file=card_file, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=e, ephemeral=True)
 
 
 class DungeonActionButton(discord.ui.Button):
@@ -1296,7 +1856,13 @@ class DungeonActionButton(discord.ui.Button):
             if not state.ok:
                 return await interaction.response.send_message(tr(lang, "rpg.dungeon.no_active"), ephemeral=True)
             e = resolved_embed if resolved_embed is not None else _build_dungeon_state_embed(state, lang)
-            await interaction.response.edit_message(embed=e, view=DungeonControlView(guild_id, target_user, lang, state))
+            next_view = DungeonControlView(guild_id, target_user, lang, state)
+            payload = _dungeon_state_card_payload(state, lang)
+            card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+            if card_file is not None:
+                await interaction.response.edit_message(embed=e, view=next_view, attachments=[card_file])
+            else:
+                await interaction.response.edit_message(embed=e, view=next_view, attachments=[])
             return
 
         if self.action == "retreat":
@@ -1304,7 +1870,12 @@ class DungeonActionButton(discord.ui.Button):
             if not result.ok:
                 return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
             e = _build_dungeon_finish_embed(result, lang)
-            await interaction.response.edit_message(embed=e, view=None)
+            payload = _dungeon_finish_card_payload(result, lang)
+            card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+            if card_file is not None:
+                await interaction.response.edit_message(embed=e, view=None, attachments=[card_file])
+            else:
+                await interaction.response.edit_message(embed=e, view=None, attachments=[])
             return
 
         if self.action == "claim":
@@ -1312,7 +1883,12 @@ class DungeonActionButton(discord.ui.Button):
             if not result.ok:
                 return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
             e = _build_dungeon_finish_embed(result, lang)
-            await interaction.response.edit_message(embed=e, view=None)
+            payload = _dungeon_finish_card_payload(result, lang)
+            card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+            if card_file is not None:
+                await interaction.response.edit_message(embed=e, view=None, attachments=[card_file])
+            else:
+                await interaction.response.edit_message(embed=e, view=None, attachments=[])
             return
 
         await interaction.response.send_message(tr(lang, "rpg.dungeon.action_failed"), ephemeral=True)
@@ -1381,30 +1957,9 @@ async def _publish_combat_log(log_lines: list[str], lang: str = "en") -> str | N
 
 def build_embed_from_result(
     result,
-    player_name: str,
-    team_lines: list[str],
     log_url: str | None,
     lang: str = "en",
 ) -> discord.Embed:
-    enemy_text = ", ".join(f"{mid} x{cnt}" for mid, cnt in (result.encounters or {}).items()) or "unknown pack"
-    progress_text = _hp_bar(result.kills, max(1, result.pack), 18)
-    drop_line = ", ".join(f"{k}x{v}" for k, v in (result.drops or {}).items()) if result.drops else "none"
-    card = (
-        "```text\n"
-        + "+---------------- TEAM HUNT ----------------+\n"
-        + f"| Player : {player_name[:27]:27} |\n"
-        + "+-------------------------------------------+\n"
-        + "| TEAM                                      |\n"
-        + "\n".join(f"| {line[:41]:41} |" for line in (team_lines or ["(no team data)"]))
-        + "\n+-------------------------------------------+\n"
-        + f"| ENEMY : {enemy_text[:33]:33} |\n"
-        + f"| CLEAR : {result.kills}/{result.pack} {progress_text[:18]:18} |\n"
-        + f"| REWARD: +{result.gold} SC  +{result.xp}xp{' ' * 18} |\n"
-        + f"| DROPS : {drop_line[:33]:33} |\n"
-        + "+-------------------------------------------+\n"
-        + "```"
-    )
-
     e = discord.Embed(
         title="⚔️ Team Hunt Report" if lang == "en" else "⚔️ Báo cáo săn đội",
         color=discord.Color.green() if result.kills == result.pack else discord.Color.orange(),
@@ -1412,39 +1967,57 @@ def build_embed_from_result(
     link_value = tr(lang, "rpg.log_link_hint")
     if log_url:
         link_value += f"\n{log_url}"
-    e.add_field(name="Log Link", value=link_value, inline=False)
-    e.add_field(name="Battle Card", value=card, inline=False)
-    if result.drops:
-        e.add_field(name=tr(lang, "rpg.drops_field"), value=", ".join(f"{_item_label(k)} x{v}" for k, v in result.drops.items()), inline=False)
-    if result.leveled_up:
-        e.add_field(name="🎉", value=tr(lang, "rpg.level_up", level=result.level), inline=False)
+    e.add_field(name="📜 Battle Record", value=link_value, inline=False)
     return e
 
 
 def build_hunt_response(
     result,
-    player_name: str,
-    team_lines: list[str],
     log_url: str | None,
     lang: str = "en",
 ) -> tuple[discord.Embed, CombatDetailView]:
-    embed = build_embed_from_result(result, player_name, team_lines, log_url, lang=lang)
+    embed = build_embed_from_result(result, log_url, lang=lang)
     detail_text = "\n".join((result.logs or [])[:20]) if result.logs else tr(lang, "rpg.no_combat_detail")
     view = CombatDetailView(detail_text, lang=lang)
     return embed, view
 
 
-async def handle_hunt(guild_id: int, user_id: int, player_name: str, lang: str = "en") -> tuple[discord.Embed | None, CombatDetailView | None, str | None]:
+async def handle_hunt(
+    guild_id: int,
+    user_id: int,
+    player_name: str,
+    guild: discord.Guild | None = None,
+    lang: str = "en",
+) -> tuple[discord.Embed | None, CombatDetailView | None, str | None, discord.File | None]:
     result = await CombatService.hunt(guild_id, user_id, lang=lang)
     if not result.ok:
         if int(getattr(result, "cooldown_remain", 0)) > 0:
-            return None, None, tr(lang, "rpg.hunt_cooldown", seconds=int(result.cooldown_remain))
-        return None, None, tr(lang, "rpg.hunt_unavailable")
+            return None, None, tr(lang, "rpg.hunt_cooldown", seconds=int(result.cooldown_remain)), None
+        return None, None, tr(lang, "rpg.hunt_unavailable"), None
 
-    team_lines = await _team_snapshot_lines(guild_id, user_id)
     log_url = await _publish_combat_log(result.logs or [], lang=lang)
-    embed, view = build_hunt_response(result, player_name, team_lines, log_url, lang=lang)
-    return embed, view, None
+    embed, view = build_hunt_response(result, log_url, lang=lang)
+
+    card_file: discord.File | None = None
+    if guild is not None:
+        lore = await _profile_lore_meta(guild_id, user_id)
+        card_members = await _enrich_team_members_for_card(
+            guild_id,
+            user_id,
+            lore.get("team_members", []) if isinstance(lore.get("team_members", []), list) else [],
+        )
+        battle_data = convert_combat_result_to_battle_data(
+            player_name=player_name,
+            team_members=card_members,
+            combat_result=result,
+            lang=lang,
+        )
+        card_buffer = await render_battle_card(battle_data, guild)
+        if card_buffer is not None:
+            card_file = discord.File(fp=card_buffer, filename="battle_card.png")
+            embed.set_image(url="attachment://battle_card.png")
+
+    return embed, view, None, card_file
 
 
 async def handle_profile(
@@ -1452,20 +2025,383 @@ async def handle_profile(
     target: discord.Member,
     lang: str = "en",
     stats_mode: bool = False,
-) -> tuple[discord.Embed | None, list[discord.File], TeamMemberDetailView | None, str | None]:
+) -> tuple[discord.Embed | None, TeamMemberDetailView | None, str | None]:
     result = await PlayerService.get_profile(guild_id, target.id)
     if not result.ok:
-        return None, [], None, tr(lang, "rpg.profile_fetch_failed")
+        return None, None, tr(lang, "rpg.profile_fetch_failed")
     lore = await _profile_lore_meta(guild_id, target.id)
     embed = _build_formation_analysis_embed(target, result, lore, lang=lang) if stats_mode else _build_profile_embed(target, result, lore, lang=lang)
-    files = _collect_files(apply_embed_asset(embed, "profile"))
     team_members = lore.get("team_members", []) if isinstance(lore.get("team_members"), list) else []
     view = TeamMemberDetailView(target.display_name, team_members, lang=lang) if team_members else None
-    return embed, files, view, None
+    return embed, view, None
+
+
+def _boss_rarity_from_id(boss_id: str) -> str:
+    bid = str(boss_id or "").strip().lower()
+    if bid in {"void_tyrant", "ashen_dragon", "ogre_king"}:
+        return "mythic"
+    if bid in {"ogre_chief"}:
+        return "epic"
+    return "rare"
+
+
+def _boss_level_from_stats(hp: int, atk: int, defense: int) -> int:
+    return max(1, int((max(1, hp) ** 0.5) / 2 + (atk + defense) / 18))
+
+
+def _character_display_emoji(char_meta: dict, rarity: str | None = None, fallback: str = "🎮") -> str:
+    raw = str((char_meta or {}).get("emoji", fallback) or fallback).strip()
+    if not raw:
+        return fallback
+    if raw in RARITY_ICONS.values():
+        return ""
+    if rarity and raw == RARITY_ICONS.get(str(rarity).strip().lower(), ""):
+        return ""
+    return raw
+
+
+_GUILD_EMOJI_ALIASES: dict[str, list[str]] = dict(RPG_EMOJI_ALIASES)
+
+
+def _norm_emoji_key(name: str) -> str:
+    raw = str(name or "").strip().lower()
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in {"_", "-"}:
+            out.append(ch)
+        elif ch.isspace():
+            out.append("_")
+    key = "".join(out).strip("_")
+    return key
+
+
+def _guild_emoji_index(guild: discord.Guild) -> dict[str, discord.Emoji]:
+    idx: dict[str, discord.Emoji] = {}
+
+    state = getattr(guild, "_state", None)
+    client = state._get_client() if state is not None and hasattr(state, "_get_client") else None
+    emoji_sources = getattr(client, "emojis", None)
+    if emoji_sources is None:
+        emoji_sources = []
+
+    for e in list(emoji_sources):
+        k = _norm_emoji_key(str(getattr(e, "name", "")))
+        if k and k not in idx:
+            idx[k] = e
+
+    for e in getattr(guild, "emojis", []):
+        k = _norm_emoji_key(str(getattr(e, "name", "")))
+        if k and k not in idx:
+            idx[k] = e
+
+    return idx
+
+
+def _guild_emoji_token(
+    guild: discord.Guild,
+    name: str,
+    fallback: str = "",
+    emoji_index: dict[str, discord.Emoji] | None = None,
+) -> str:
+    key = _norm_emoji_key(name)
+    if not key:
+        return fallback
+
+    idx = emoji_index if isinstance(emoji_index, dict) else _guild_emoji_index(guild)
+    candidates: list[str] = [
+        key,
+        key.replace("-", "_"),
+        key.replace("_", "-"),
+        key.replace("_", ""),
+    ]
+    for alias in _GUILD_EMOJI_ALIASES.get(key, []):
+        a = _norm_emoji_key(alias)
+        if a:
+            candidates.append(a)
+
+    seen: set[str] = set()
+    for c in candidates:
+        if c in seen:
+            continue
+        seen.add(c)
+        e = idx.get(c)
+        if e is None:
+            continue
+        prefix = "a" if bool(getattr(e, "animated", False)) else ""
+        return f"<{prefix}:{e.name}:{e.id}>" if prefix else f"<:{e.name}:{e.id}>"
+    return fallback
+
+
+_EMOJI_SHORTCODE_RE = re.compile(r":([A-Za-z0-9_]+):")
+_INTERACTION_RESPONSE_EMOJI_PATCHED = False
+
+
+def _is_rpg_interaction(interaction: discord.Interaction | None) -> bool:
+    if not isinstance(interaction, discord.Interaction):
+        return False
+
+    cmd = getattr(interaction, "command", None)
+    cmd_name = str(getattr(cmd, "name", "")).strip().lower()
+    root_parent = getattr(cmd, "root_parent", None)
+    root_name = str(getattr(root_parent, "name", "")).strip().lower()
+    if cmd_name in RPG_COMMAND_NAMES or root_name in RPG_COMMAND_NAMES:
+        return True
+
+    data = getattr(interaction, "data", None)
+    if isinstance(data, dict):
+        custom_id = str(data.get("custom_id", "")).strip().lower()
+        if custom_id.startswith("rpg:"):
+            return True
+    return False
+
+
+def _emojiify_text(text: str, guild: discord.Guild, emoji_index: dict[str, discord.Emoji] | None = None) -> str:
+    if not isinstance(text, str) or ":" not in text:
+        return text
+    idx = emoji_index if isinstance(emoji_index, dict) else _guild_emoji_index(guild)
+
+    def repl(match: re.Match[str]) -> str:
+        return _guild_emoji_token(guild, match.group(1), match.group(0), idx)
+
+    return _EMOJI_SHORTCODE_RE.sub(repl, text)
+
+
+def _emojiify_embed(embed: discord.Embed, guild: discord.Guild, emoji_index: dict[str, discord.Emoji] | None = None) -> discord.Embed:
+    idx = emoji_index if isinstance(emoji_index, dict) else _guild_emoji_index(guild)
+
+    if isinstance(embed.title, str) and embed.title:
+        embed.title = _emojiify_text(embed.title, guild, idx)
+    if isinstance(embed.description, str) and embed.description:
+        embed.description = _emojiify_text(embed.description, guild, idx)
+
+    for i, field in enumerate(list(embed.fields)):
+        field_name = _emojiify_text(str(field.name), guild, idx)
+        field_value = _emojiify_text(str(field.value), guild, idx)
+        if field_name != field.name or field_value != field.value:
+            embed.set_field_at(i, name=field_name, value=field_value, inline=field.inline)
+
+    footer_text = getattr(embed.footer, "text", None)
+    if isinstance(footer_text, str) and footer_text:
+        footer_icon = getattr(embed.footer, "icon_url", None)
+        embed.set_footer(
+            text=_emojiify_text(footer_text, guild, idx),
+            icon_url=str(footer_icon) if footer_icon else None,
+        )
+
+    author_name = getattr(embed.author, "name", None)
+    if isinstance(author_name, str) and author_name:
+        author_url = getattr(embed.author, "url", None)
+        author_icon = getattr(embed.author, "icon_url", None)
+        embed.set_author(
+            name=_emojiify_text(author_name, guild, idx),
+            url=str(author_url) if author_url else None,
+            icon_url=str(author_icon) if author_icon else None,
+        )
+
+    return embed
+
+
+def _emojiify_interaction_payload(interaction: discord.Interaction | None, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+    if not _is_rpg_interaction(interaction):
+        return args, kwargs
+    guild = getattr(interaction, "guild", None)
+    if guild is None:
+        return args, kwargs
+
+    idx = _guild_emoji_index(guild)
+    out_args = list(args)
+
+    if out_args and isinstance(out_args[0], str):
+        out_args[0] = _emojiify_text(out_args[0], guild, idx)
+
+    content = kwargs.get("content")
+    if isinstance(content, str):
+        kwargs["content"] = _emojiify_text(content, guild, idx)
+
+    embed = kwargs.get("embed")
+    if isinstance(embed, discord.Embed):
+        kwargs["embed"] = _emojiify_embed(embed, guild, idx)
+
+    embeds = kwargs.get("embeds")
+    if isinstance(embeds, (list, tuple)):
+        kwargs["embeds"] = [
+            _emojiify_embed(e, guild, idx) if isinstance(e, discord.Embed) else e
+            for e in embeds
+        ]
+
+    return tuple(out_args), kwargs
+
+
+def _patch_interaction_response_emoji_support() -> None:
+    global _INTERACTION_RESPONSE_EMOJI_PATCHED
+    if _INTERACTION_RESPONSE_EMOJI_PATCHED:
+        return
+
+    original_send_message = discord.InteractionResponse.send_message
+    original_edit_message = discord.InteractionResponse.edit_message
+
+    async def _send_message_with_emoji_patch(self, *args, **kwargs):
+        patched_args, patched_kwargs = _emojiify_interaction_payload(getattr(self, "_parent", None), args, dict(kwargs))
+        return await original_send_message(self, *patched_args, **patched_kwargs)
+
+    async def _edit_message_with_emoji_patch(self, *args, **kwargs):
+        patched_args, patched_kwargs = _emojiify_interaction_payload(getattr(self, "_parent", None), args, dict(kwargs))
+        return await original_edit_message(self, *patched_args, **patched_kwargs)
+
+    discord.InteractionResponse.send_message = _send_message_with_emoji_patch
+    discord.InteractionResponse.edit_message = _edit_message_with_emoji_patch
+    _INTERACTION_RESPONSE_EMOJI_PATCHED = True
+
+
+async def _rpg_followup_send(interaction: discord.Interaction, *args, **kwargs):
+    patched_args, patched_kwargs = _emojiify_interaction_payload(interaction, args, dict(kwargs))
+    return await interaction.followup.send(*patched_args, **patched_kwargs)
+
+
+async def _build_guild_boss_dashboard_data(
+    guild: discord.Guild,
+    guild_id: int,
+    result,
+    lang: str,
+) -> dict:
+    is_vi = str(lang).lower().startswith("vi")
+    emoji_idx = _guild_emoji_index(guild)
+    variants = [dict(v) for v in (BOSS_VARIANTS or []) if isinstance(v, dict)]
+    by_id = {str(v.get("id", "")).lower(): v for v in variants}
+    current_id = str(getattr(result, "boss_id", "") or "").lower()
+    current_variant = by_id.get(current_id) or (variants[0] if variants else {"id": "boss", "name": "Boss", "hp": 300, "atk": 30, "def": 12, "drops": []})
+
+    c_hp_max = max(1, int(getattr(result, "boss_max_hp", 0) or int(current_variant.get("hp", 300) or 300)))
+    c_hp_now = max(0, int(getattr(result, "boss_current_hp", 0) or getattr(result, "base_hp", 0) or c_hp_max))
+    c_atk = max(1, int(getattr(result, "boss_atk", 0) or int(current_variant.get("atk", 30) or 30)))
+    c_def = max(1, int(getattr(result, "boss_def", 0) or int(current_variant.get("def", 12) or 12)))
+
+    selected = [current_variant]
+    for v in variants:
+        vid = str(v.get("id", "")).lower()
+        if vid and vid != current_id:
+            selected.append(v)
+        if len(selected) >= 3:
+            break
+    while len(selected) < 3:
+        selected.append(dict(selected[-1]))
+
+    bosses: list[dict] = []
+    for idx, v in enumerate(selected[:3]):
+        bid = str(v.get("id", f"boss_{idx}"))
+        bhp = int(v.get("hp", 250) or 250)
+        batk = int(v.get("atk", 25) or 25)
+        bdef = int(v.get("def", 10) or 10)
+        max_hp = max(1, int(bhp * (1.0 + 0.7 + idx * 0.15)))
+        cur_hp = int(max_hp * (0.85 - idx * 0.12))
+        if idx == 0:
+            max_hp = c_hp_max
+            cur_hp = c_hp_now
+            batk = c_atk
+            bdef = c_def
+
+        drops = [str(item_id) for item_id, _ in (v.get("drops", []) or [])[:3]]
+        crit = max(10, min(95, int(30 + batk * 0.45)))
+        res = max(8, min(95, int(24 + bdef * 0.5)))
+        bosses.append(
+            {
+                "name": str(v.get("name", bid.title())),
+                "level": _boss_level_from_stats(max_hp, batk, bdef),
+                "rarity": _boss_rarity_from_id(bid),
+                "emoji": _guild_emoji_token(guild, bid, f":{bid}:", emoji_idx),
+                "hp": cur_hp,
+                "max_hp": max_hp,
+                "stats": {
+                    "hp": max_hp,
+                    "atk": batk,
+                    "def": bdef,
+                    "crit": crit,
+                    "res": res,
+                },
+                "icons": [_guild_emoji_token(guild, item_id, f":{item_id}:", emoji_idx) for item_id in drops],
+            }
+        )
+
+    async with open_db() as conn:
+        top_rows = await telemetry_repo.get_top_guild_boss_damage(conn, guild_id, limit=10)
+        fighters, defeated = await telemetry_repo.get_guild_boss_summary(conn, guild_id)
+
+    top_damage: list[dict] = []
+    for idx, (uid, total_damage, _battles, _wins, _last_damage) in enumerate(top_rows, start=1):
+        member = guild.get_member(int(uid))
+        username = f"@{member.display_name}" if member is not None else f"<@{uid}>"
+        top_damage.append(
+            {
+                "rank": idx,
+                "damage": int(total_damage),
+                "username": username,
+                "emoji": str(member.display_avatar.url) if member is not None else "",
+            }
+        )
+
+    drop_map = dict(getattr(result, "drops", {}) or {})
+    rewards: list[dict] = [
+        {
+            "name": "Slime Coin" if not is_vi else "Slime Coin",
+            "amount": int(getattr(result, "gold", 0) or 0),
+            "emoji": _guild_emoji_token(guild, "slimecoin", ":slimecoin:", emoji_idx),
+        },
+        {
+            "name": "Experience" if not is_vi else "Kinh nghiệm",
+            "amount": int(getattr(result, "xp", 0) or 0),
+            "emoji": _guild_emoji_token(guild, "xp", ":xp:", emoji_idx),
+        },
+        {
+            "name": "Weapon Shards" if not is_vi else "Mảnh vũ khí",
+            "amount": int(drop_map.get("rare_crystal", 0) or 0),
+            "emoji": _guild_emoji_token(guild, "weapon_shards", _guild_emoji_token(guild, "rare_crystal", ":rare_crystal:", emoji_idx), emoji_idx),
+        },
+        {
+            "name": "Weapon Crate" if not is_vi else "Thùng vũ khí",
+            "amount": int(drop_map.get("lootbox", 0) or 0),
+            "emoji": _guild_emoji_token(guild, "weapon_crate", _guild_emoji_token(guild, "lootbox", ":lootbox:", emoji_idx), emoji_idx),
+        },
+    ]
+    if int(drop_map.get("phoenix_charm", 0) or 0) > 0:
+        rewards.append(
+            {
+                "name": "Boss Weapon Crate" if not is_vi else "Rương vũ khí boss",
+                "amount": int(drop_map.get("phoenix_charm", 0) or 0),
+                "emoji": _guild_emoji_token(guild, "boss_weapon_crate", _guild_emoji_token(guild, "phoenix_charm", ":phoenix_charm:", emoji_idx), emoji_idx),
+            }
+        )
+
+    for item_id, amount in drop_map.items():
+        item_meta = ITEMS.get(str(item_id), {})
+        rewards.append(
+            {
+                "name": str(item_meta.get("name", item_id)),
+                "amount": int(amount),
+                "emoji": _guild_emoji_token(guild, str(item_id), f":{str(item_id)}:", emoji_idx),
+            }
+        )
+
+    runs_away = f"{max(1, int(RPG_BOSS_COOLDOWN // 60))} minutes"
+    if is_vi:
+        runs_away = f"{max(1, int(RPG_BOSS_COOLDOWN // 60))} phút"
+
+    return {
+        "title": ("A Guild Boss Appeared!" if not is_vi else "Guild Boss đã xuất hiện!"),
+        "header_emoji": _guild_emoji_token(guild, current_id or "boss", f":{current_id}:" if current_id else ":boss:", emoji_idx),
+        "decor_emoji": _guild_emoji_token(guild, "fight", _guild_emoji_token(guild, "boss", ":boss:", emoji_idx), emoji_idx),
+        "bosses": bosses,
+        "top_damage": top_damage,
+        "rewards": rewards[:4],
+        "runs_away_in": runs_away,
+        "fighters": int(fighters),
+        "defeated": int(defeated),
+    }
 
 
 def build_boss_embed_from_result(result, player_name: str, team_lines: list[str], log_url: str | None, lang: str = "en") -> discord.Embed:
-    turns = max(1, sum(1 for line in (result.logs or []) if "attacks" in line or "takes" in line))
+    turns = int(getattr(result, "turns", 0) or 0)
+    if turns <= 0:
+        turns = max(1, sum(1 for line in (result.logs or []) if "attacks" in line or "takes" in line))
     embed = panel_embed(
         mode="Boss Assault",
         title=f"👑 Operation Report • {result.boss or 'Boss'}",
@@ -1476,7 +2412,7 @@ def build_boss_embed_from_result(result, player_name: str, team_lines: list[str]
     embed.add_field(name="👹 Enemy", value=str(result.boss or "Boss"), inline=True)
     embed.add_field(name="🕒 Battle Tempo", value=f"{turns} turns", inline=True)
     embed.add_field(name="🏁 Result", value=("Victory" if result.win else "Defeat"), inline=True)
-    embed.add_field(name="🎁 Rewards", value=f"+{result.gold} Slime Coin\n+{result.xp} XP", inline=True)
+    embed.add_field(name="🎁 Rewards", value=f"+{result.gold} {CURRENCY_ICON} Slime Coin\n+{result.xp} {XP_ICON}", inline=True)
     link_value = tr(lang, "rpg.log_link_hint")
     if log_url:
         link_value += f"\n{log_url}"
@@ -1489,21 +2425,40 @@ def build_boss_embed_from_result(result, player_name: str, team_lines: list[str]
     return embed
 
 
-async def handle_boss(guild_id: int, user_id: int, player_name: str, lang: str = "en") -> tuple[discord.Embed | None, CombatDetailView | None, str | None]:
+async def handle_boss(
+    guild_id: int,
+    user_id: int,
+    player_name: str,
+    guild: discord.Guild | None = None,
+    lang: str = "en",
+) -> tuple[discord.Embed | None, discord.ui.View | None, str | None, discord.File | None]:
     result = await CombatService.boss(guild_id, user_id, lang=lang)
     if not result.ok:
-        return None, None, tr(lang, "rpg.boss_unavailable")
+        if int(getattr(result, "cooldown_remain", 0)) > 0:
+            return None, None, tr(lang, "rpg.boss_cooldown", seconds=int(result.cooldown_remain)), None
+        return None, None, tr(lang, "rpg.boss_unavailable"), None
     team_lines = await _team_snapshot_lines(guild_id, user_id)
     log_url = await _publish_combat_log(result.logs or [], lang=lang)
     embed = build_boss_embed_from_result(result, player_name, team_lines, log_url, lang=lang)
     detail_text = "\n".join((result.logs or [])[:20]) if result.logs else tr(lang, "rpg.no_combat_detail")
-    view = CombatDetailView(detail_text, lang=lang)
-    return embed, view, None
+    view = BossCombatView(guild_id, user_id, detail_text, lang=lang)
+
+    card_file: discord.File | None = None
+    if guild is not None:
+        try:
+            dashboard_data = await _build_guild_boss_dashboard_data(guild, guild_id, result, lang)
+            card_buffer = await render_guild_boss_image(dashboard_data)
+            card_file = discord.File(fp=card_buffer, filename="guild_boss_dashboard.png")
+            embed.set_image(url="attachment://guild_boss_dashboard.png")
+        except Exception:
+            logger.exception("failed to render guild boss dashboard image guild=%s user=%s", guild_id, user_id)
+
+    return embed, view, None, card_file
 
 
-async def handle_quest(guild_id: int, user_id: int, lang: str = "en") -> discord.Embed:
+async def handle_quest(guild_id: int, user_id: int, owner_name: str | None = None, lang: str = "en") -> discord.Embed:
     quests = await QuestService.get_quests(guild_id, user_id)
-    return _build_quest_board_embed(quests, lang=lang)
+    return _build_quest_board_embed(quests, owner_name=owner_name, lang=lang)
 
 
 async def handle_quest_claim(guild_id: int, user_id: int, quest_id: str, lang: str = "en") -> str:
@@ -1562,7 +2517,7 @@ async def handle_create_character(
     base_atk = int(char_data["attack"])
     base_def = int(char_data["defense"])
     scale = 1 + (level - 1) * 0.1
-    emoji = char_data.get("emoji", "🎮")
+    emoji = _character_display_emoji(char_data)
     embed = panel_embed(
         mode="Captain Deployment",
         title=f"{emoji} Captain Deployed",
@@ -1585,7 +2540,8 @@ def _target_hero_line(target_cid: str | None) -> str:
     c = CHARACTERS.get(cid, {})
     hero_name = str(c.get("name", cid or "Captain"))
     hero_form = str(c.get("form", "Base"))
-    return f"{c.get('emoji', '🎮')} **{hero_name} [{hero_form}]**"
+    hero_emoji = _character_display_emoji(c, str(c.get("rarity", "")), fallback="")
+    return f"{hero_emoji + ' ' if hero_emoji else ''}**{hero_name} [{hero_form}]**"
 
 
 async def handle_equip_action(
@@ -1642,7 +2598,9 @@ async def handle_gacha(
     pulls: int = 1,
     banner: str = "none",
     lang: str = "en",
-) -> tuple[discord.Embed | None, str | None, bool]:
+    guild: discord.Guild | None = None,
+    player_name: str = "",
+) -> tuple[discord.Embed | None, str | None, bool, discord.File | None]:
     pulls = max(1, min(10, int(pulls)))
     banner_id = str(banner or "none").lower()
     if banner_id not in GACHA_BANNERS:
@@ -1653,12 +2611,12 @@ async def handle_gacha(
         player_row = await get_player(conn, guild_id, user_id)
         if not player_row:
             msg = "❌ Bạn chưa có player profile." if lang == "vi" else "❌ You don't have a player profile yet."
-            return None, msg, True
+            return None, msg, True, None
 
         _, _, _, _, _, _, gold = map(int, player_row)
         if gold < cost:
-            msg = f"❌ Cần {cost} Slime Coin, bạn chỉ có {gold} Slime Coin." if lang == "vi" else f"❌ Need {cost} Slime Coin, you only have {gold}."
-            return None, msg, True
+            msg = f"❌ Cần {cost} {CURRENCY_ICON} Slime Coin, bạn chỉ có {gold} {CURRENCY_ICON} Slime Coin." if lang == "vi" else f"❌ Need {cost} {CURRENCY_ICON} Slime Coin, you only have {gold}."
+            return None, msg, True, None
 
         pity_count, _ = await get_gacha_pity(conn, guild_id, user_id)
 
@@ -1669,17 +2627,22 @@ async def handle_gacha(
 
         results: list[tuple[str, str]] = []
         duplicates: list[str] = []
+        pull_rows: list[dict] = []
         legendary_progress_ids: list[str] = []
         seen_legendary_ids: set[str] = set()
 
-        for _ in range(pulls):
+        for idx in range(pulls):
             char_id, rarity = roll_character(pity_count, banner_id=banner_id)
             pity_count = 0 if rarity in {"legendary", "mythic"} else pity_count + 1
             char_meta = CHARACTERS.get(char_id, {})
+            char_name = str(char_meta.get("name", char_id))
+            char_form = str(char_meta.get("form", "Base"))
+            char_emoji = _character_display_emoji(char_meta, rarity, fallback="")
             if str(char_meta.get("rarity", "")).lower() == "legendary" and char_id not in seen_legendary_ids:
                 seen_legendary_ids.add(char_id)
                 legendary_progress_ids.append(char_id)
 
+            is_duplicate = False
             try:
                 await conn.execute(
                     """
@@ -1699,8 +2662,20 @@ async def handle_gacha(
                     (guild_id, user_id, char_id, DUPLICATE_SHARD_VALUE, int(time.time())),
                 )
                 duplicates.append(char_id)
+                is_duplicate = True
 
             results.append((char_id, rarity))
+            pull_rows.append(
+                {
+                    "index": idx + 1,
+                    "character_id": char_id,
+                    "name": char_name,
+                    "form": char_form,
+                    "rarity": str(rarity).lower(),
+                    "emoji": char_emoji,
+                    "is_duplicate": is_duplicate,
+                }
+            )
 
         from .repositories import quest_repo
 
@@ -1714,15 +2689,15 @@ async def handle_gacha(
         top_meta = CHARACTERS.get(top_id, {})
         top_name = str(top_meta.get("name", top_id))
         top_form = str(top_meta.get("form", "Base"))
-        top_emoji = str(top_meta.get("emoji", "🎮"))
+        top_emoji = _character_display_emoji(top_meta, top_rarity, fallback="")
 
         grouped_lines: dict[str, list[str]] = defaultdict(list)
         for char_id, rarity in sorted_results:
             char = CHARACTERS.get(char_id, {})
             name = str(char.get("name", char_id))
             form = str(char.get("form", "Base"))
-            emoji = str(char.get("emoji", "🎮"))
-            grouped_lines[str(rarity).lower()].append(f"{emoji} **{name} [{form}]**")
+            emoji = _character_display_emoji(char, rarity, fallback="")
+            grouped_lines[str(rarity).lower()].append(f"{emoji + ' ' if emoji else ''}**{name} [{form}]**")
 
         pity_now = int(pity_count)
         pity_bar = progress_bar(pity_now, HARD_PITY, 12)
@@ -1735,7 +2710,7 @@ async def handle_gacha(
         )
         embed.add_field(
             name="⭐ Featured Pull",
-            value=f"{rarity_icon(top_rarity)} {top_emoji} **{top_name} [{top_form}]** • {str(top_rarity).title()}",
+            value=f"{rarity_icon(top_rarity)} {top_emoji + ' ' if top_emoji else ''}**{top_name} [{top_form}]** • {str(top_rarity).title()}",
             inline=False,
         )
         if banner_id != "none":
@@ -1784,18 +2759,40 @@ async def handle_gacha(
         if lang == "vi":
             hint = "💡 Dùng `/ascend_mythic <legendary_id>` để ghép Mythic thủ công khi sẵn sàng."
         embed.add_field(name="Tip", value=hint, inline=False)
-        return embed, None, False
+
+        card_file: discord.File | None = None
+        if guild is not None:
+            banner_name = str(GACHA_BANNERS.get(banner_id, {}).get("name", "Standard Rift"))
+            card_buffer = await render_gacha_card(
+                player_name=player_name,
+                pulls=pull_rows,
+                guild=guild,
+                pull_count=pulls,
+                banner_name=banner_name,
+                pity_now=pity_now,
+                soft_pity=SOFT_PITY,
+                hard_pity=HARD_PITY,
+                cost=cost,
+                duplicate_shard_value=DUPLICATE_SHARD_VALUE,
+                lang=lang,
+            )
+            if card_buffer is not None:
+                card_file = discord.File(fp=card_buffer, filename="gacha_card.png")
+                embed.set_image(url="attachment://gacha_card.png")
+
+        return embed, None, False, card_file
 
 
 async def handle_team(
     guild_id: int,
     user_id: int,
     owner_name: str,
+    guild: discord.Guild | None = None,
     action: str = "view",
     character_id: str | None = None,
     slot: int = 1,
     lang: str = "en",
-) -> tuple[discord.Embed | None, TeamMemberDetailView | None, str | None, bool]:
+) -> tuple[discord.Embed | None, TeamMemberDetailView | None, str | None, bool, discord.File | None]:
     act = str(action or "view").strip().lower()
     if act == "deploy":
         act = "add"
@@ -1805,7 +2802,7 @@ async def handle_team(
             team_chars = await get_team(conn, guild_id, user_id)
             if not main and not team_chars:
                 msg = "❌ Bạn chưa có Captain. Dùng `/create_character` trước." if lang == "vi" else "❌ You don't have a Captain yet. Use `/create_character` first."
-                return None, None, msg, True
+                return None, None, msg, True, None
 
             detail_members: list[dict] = []
             total_power = 0.0
@@ -1871,33 +2868,40 @@ async def handle_team(
             embed.add_field(name="🛡️ Frontline", value="\n".join(front) if front else "No frontline", inline=True)
             embed.add_field(name="🎯 Backline", value="\n".join(back) if back else "No backline", inline=True)
             view = TeamMemberDetailView(owner_name, detail_members, lang=lang) if detail_members else None
-            return embed, view, None, False
+            card_file: discord.File | None = None
+            if guild is not None:
+                card_members = await _enrich_team_members_for_card(guild_id, user_id, detail_members)
+                team_card_buffer = await render_team_card(owner_name, card_members, guild, lang=lang)
+                if team_card_buffer is not None:
+                    card_file = discord.File(fp=team_card_buffer, filename="team_card.png")
+                    embed.set_image(url="attachment://team_card.png")
+            return embed, view, None, False, card_file
 
         if act == "add":
             if not character_id:
                 msg = "❌ Cần ID hero." if lang == "vi" else "❌ Hero ID is required."
-                return None, None, msg, True
+                return None, None, msg, True, None
 
             main = await get_main_character(conn, guild_id, user_id)
             if not main:
                 msg = "❌ Bạn chưa có Captain. Dùng `/create_character` trước." if lang == "vi" else "❌ You don't have a Captain yet. Use `/create_character` first."
-                return None, None, msg, True
+                return None, None, msg, True, None
 
             owned = await get_player_characters(conn, guild_id, user_id)
             owned_ids = {str(row[1]) for row in owned}
 
             if character_id not in owned_ids:
                 msg = "❌ Bạn không sở hữu hero này." if lang == "vi" else "❌ You don't own this hero."
-                return None, None, msg, True
+                return None, None, msg, True, None
 
             if character_id == str(main[1]):
                 msg = "❌ Captain đã cố định, không thêm vào hero slot." if lang == "vi" else "❌ Captain is fixed and cannot be added to hero slots."
-                return None, None, msg, True
+                return None, None, msg, True, None
 
             team_chars = await get_team(conn, guild_id, user_id)
             if any(str(row[1]) == character_id for row in team_chars):
                 msg = "❌ Hero này đã có trong team." if lang == "vi" else "❌ This hero is already in your team."
-                return None, None, msg, True
+                return None, None, msg, True, None
 
             slot = max(1, min(4, slot))
             await set_team_character(conn, guild_id, user_id, slot, character_id)
@@ -1905,16 +2909,16 @@ async def handle_team(
 
             char = CHARACTERS.get(character_id, {})
             msg = f"✅ Đã thêm **{char.get('name', character_id)}** vào hero slot {slot}." if lang == "vi" else f"✅ Added **{char.get('name', character_id)}** to hero slot {slot}."
-            return None, None, msg, False
+            return None, None, msg, False, None
 
         if act == "reset":
             await clear_team(conn, guild_id, user_id)
             await conn.commit()
             msg = "✅ Đã reset team." if lang == "vi" else "✅ Team has been reset."
-            return None, None, msg, False
+            return None, None, msg, False, None
 
         msg = "❌ Action không hợp lệ. Dùng: view, deploy, reset" if lang == "vi" else "❌ Invalid action. Use: view, deploy, reset"
-        return None, None, msg, True
+        return None, None, msg, True, None
 
 
 async def handle_my_characters(guild_id: int, user_id: int, lang: str = "en") -> tuple[discord.Embed | None, str | None, bool]:
@@ -2105,6 +3109,7 @@ async def autocomplete_dungeon_choice_id(interaction: discord.Interaction, curre
 
 def setup(bot: commands.Bot, guilds: list = None):
     guilds = guilds or []
+    _patch_interaction_response_emoji_support()
 
     async def _rpg_rate_limit_check(interaction: discord.Interaction) -> bool:
         cmd = interaction.command
@@ -2141,7 +3146,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         root_name = str(getattr(root_parent, "name", "")).strip().lower()
         if cmd_name in RPG_STARTED_COMMANDS or root_name in RPG_STARTED_COMMANDS:
             if not await _check_player_registered(interaction):
-                raise app_commands.CheckFailure("Player not registered")
+                return False
         
         return True
 
@@ -2149,7 +3154,6 @@ def setup(bot: commands.Bot, guilds: list = None):
 
     async def _on_ready_once():
         await ensure_db_ready()
-        reload_assets()
 
     bot.add_listener(_on_ready_once, "on_ready")
     try:
@@ -2175,10 +3179,10 @@ def setup(bot: commands.Bot, guilds: list = None):
         if target is None:
             return await interaction.response.send_message(tr(lang, "common.member_unknown"), ephemeral=True)
 
-        e, files, view, err = await handle_profile(interaction.guild.id, target, lang=lang, stats_mode=False)
+        e, view, err = await handle_profile(interaction.guild.id, target, lang=lang, stats_mode=False)
         if err:
             return await interaction.response.send_message(err, ephemeral=True)
-        await interaction.response.send_message(embed=e, files=files, view=view)
+        await interaction.response.send_message(embed=e, view=view)
         if view is not None:
             try:
                 view.message = await interaction.original_response()
@@ -2195,24 +3199,15 @@ def setup(bot: commands.Bot, guilds: list = None):
         if target is None:
             return await interaction.response.send_message(tr(lang, "common.member_unknown"), ephemeral=True)
 
-        e, files, view, err = await handle_profile(interaction.guild.id, target, lang=lang, stats_mode=True)
+        e, view, err = await handle_profile(interaction.guild.id, target, lang=lang, stats_mode=True)
         if err:
             return await interaction.response.send_message(err, ephemeral=True)
-        await interaction.response.send_message(embed=e, files=files, view=view)
+        await interaction.response.send_message(embed=e, view=view)
         if view is not None:
             try:
                 view.message = await interaction.original_response()
             except Exception:
                 pass
-
-    @bot.tree.command(name="rpg_balance", description=app_commands.locale_str("cmd.rpg_balance.desc"))
-    async def rpg_balance(interaction: discord.Interaction):
-        lang = await resolve_lang(interaction)
-        if interaction.guild is None:
-            return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
-        gold = await EconomyService.get_balance(interaction.guild.id, interaction.user.id)
-        msg = f"💰 Bạn có **{gold}** Slime Coin." if lang == "vi" else f"💰 You have **{gold}** Slime Coin."
-        await interaction.response.send_message(msg, ephemeral=True)
 
     @bot.tree.command(name="rpg_daily", description=app_commands.locale_str("cmd.rpg_daily.desc"))
     async def rpg_daily(interaction: discord.Interaction):
@@ -2237,7 +3232,7 @@ def setup(bot: commands.Bot, guilds: list = None):
 
         result = await EconomyService.transfer_gold(interaction.guild.id, interaction.user.id, member.id, amount, lang=lang)
         if result.ok:
-            msg = f"💸 Đã chuyển **{amount}** Slime Coin cho {member.mention}" if lang == "vi" else f"💸 Transferred **{amount}** Slime Coin to {member.mention}"
+            msg = f"💸 Đã chuyển **{amount}** {CURRENCY_ICON} Slime Coin cho {member.mention}" if lang == "vi" else f"💸 Transferred **{amount}** {CURRENCY_ICON} Slime Coin to {member.mention}"
             await interaction.response.send_message(msg)
         else:
             await interaction.response.send_message(result.message, ephemeral=True)
@@ -2245,22 +3240,43 @@ def setup(bot: commands.Bot, guilds: list = None):
     @bot.tree.command(name="rpg_shop", description=app_commands.locale_str("cmd.rpg_shop.desc"))
     async def rpg_shop(interaction: discord.Interaction):
         lang = await resolve_lang(interaction)
-        e = _build_shop_main_embed(lang)
-        await interaction.response.send_message(embed=e)
+        if interaction.guild is None:
+            return await _server_only_interaction(interaction)
+        category = "main"
+        view = ShopCategoryView(current_category=category, lang=lang)
+        e, card_file = await _build_shop_embed_and_card(category, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, view=view, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e, view=view)
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            pass
 
     @bot.tree.command(name="shop", description=app_commands.locale_str("cmd.shop.desc"))
     @app_commands.describe(category=app_commands.locale_str("cmd.shop.param.category"))
     async def rpg_shop_category(interaction: discord.Interaction, category: str = "main"):
         lang = await resolve_lang(interaction)
-        e = _build_shop_category_embed(category, lang)
-        await interaction.response.send_message(embed=e)
+        if interaction.guild is None:
+            return await _server_only_interaction(interaction)
+        selected = _normalize_shop_category_input(category)
+        view = ShopCategoryView(current_category=selected, lang=lang)
+        e, card_file = await _build_shop_embed_and_card(selected, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, view=view, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e, view=view)
+        try:
+            view.message = await interaction.original_response()
+        except Exception:
+            pass
 
     @bot.tree.command(name="craft_list", description=app_commands.locale_str("cmd.craft_list.desc"))
     async def craft_list(interaction: discord.Interaction):
         lang = await resolve_lang(interaction)
         e = _build_craft_recipes_embed(lang)
-        f = apply_embed_asset(e, "shop")
-        await interaction.response.send_message(embed=e, files=_collect_files(f))
+        await interaction.response.send_message(embed=e)
 
     @bot.tree.command(name="craft", description=app_commands.locale_str("cmd.craft.desc"))
     @app_commands.describe(recipe_id=app_commands.locale_str("cmd.craft.param.recipe_id"), amount=app_commands.locale_str("cmd.craft.param.amount"))
@@ -2287,15 +3303,13 @@ def setup(bot: commands.Bot, guilds: list = None):
             return await _server_only_interaction(interaction)
         ok, msg = await EconomyService.buy_item(interaction.guild.id, interaction.user.id, item, amount, lang=lang)
         if ok:
-            data = ITEMS.get(item, {})
             e = panel_embed(
                 mode="Quartermaster Bazaar",
                 title=("✅ Supply Acquired" if lang == "en" else "✅ Tiếp tế thành công"),
                 description=msg,
                 theme="victory",
             )
-            f = apply_item_asset(e, item)
-            await interaction.response.send_message(embed=e, files=_collect_files(f))
+            await interaction.response.send_message(embed=e)
         else:
             await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
 
@@ -2353,8 +3367,7 @@ def setup(bot: commands.Bot, guilds: list = None):
             return await interaction.response.send_message(msg)
 
         e = _build_inventory_embed(target, items, lang)
-        f = apply_embed_asset(e, "inventory")
-        await interaction.response.send_message(embed=e, files=_collect_files(f))
+        await interaction.response.send_message(embed=e)
 
     @bot.tree.command(name="rpg_equipment", description=app_commands.locale_str("cmd.rpg_equipment.desc"))
     @app_commands.describe(member=app_commands.locale_str("cmd.rpg_equipment.param.member"), character_id=app_commands.locale_str("cmd.team.param.character_id"))
@@ -2481,10 +3494,19 @@ def setup(bot: commands.Bot, guilds: list = None):
         if interaction.guild is None:
             return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
         await interaction.response.defer()
-        embed, view, err = await handle_hunt(interaction.guild.id, interaction.user.id, interaction.user.display_name, lang=lang)
+        embed, view, err, card_file = await handle_hunt(
+            interaction.guild.id,
+            interaction.user.id,
+            interaction.user.display_name,
+            guild=interaction.guild,
+            lang=lang,
+        )
         if err:
-            return await interaction.followup.send(err, ephemeral=True)
-        await interaction.followup.send(embed=embed, view=view)
+            return await _rpg_followup_send(interaction, err, ephemeral=True)
+        if card_file is not None:
+            await _rpg_followup_send(interaction, embed=embed, view=view, file=card_file)
+        else:
+            await _rpg_followup_send(interaction, embed=embed, view=view)
         view.message = await interaction.original_response()
 
     @bot.tree.command(name="boss", description=app_commands.locale_str("cmd.boss.desc"))
@@ -2493,10 +3515,19 @@ def setup(bot: commands.Bot, guilds: list = None):
         if interaction.guild is None:
             return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
         await interaction.response.defer()
-        embed, view, err = await handle_boss(interaction.guild.id, interaction.user.id, interaction.user.display_name, lang=lang)
+        embed, view, err, card_file = await handle_boss(
+            interaction.guild.id,
+            interaction.user.id,
+            interaction.user.display_name,
+            guild=interaction.guild,
+            lang=lang,
+        )
         if err:
-            return await interaction.followup.send(err, ephemeral=True)
-        await interaction.followup.send(embed=embed, view=view)
+            return await _rpg_followup_send(interaction, err, ephemeral=True)
+        if card_file is not None:
+            await _rpg_followup_send(interaction, embed=embed, view=view, file=card_file)
+        else:
+            await _rpg_followup_send(interaction, embed=embed, view=view)
         view.message = await interaction.original_response()
 
     dungeon_group = app_commands.Group(name="dungeon", description=app_commands.locale_str("cmd.dungeon_group.desc"))
@@ -2507,18 +3538,37 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await resolve_lang(interaction)
         if interaction.guild is None:
             return await interaction.response.send_message(tr(lang, "common.server_only"), ephemeral=True)
-        result = await DungeonRunService.start_run(interaction.guild.id, interaction.user.id, difficulty=difficulty, lang=lang)
+        await interaction.response.defer()
+        try:
+            result = await DungeonRunService.start_run(interaction.guild.id, interaction.user.id, difficulty=difficulty, lang=lang)
+        except Exception:
+            logger.exception(
+                "dungeon start crashed guild=%s user=%s difficulty=%s",
+                interaction.guild.id,
+                interaction.user.id,
+                difficulty,
+            )
+            return await _rpg_followup_send(interaction, tr(lang, "unknown_error"), ephemeral=True)
         if not result.ok:
-            return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
+            logger.warning(
+                "dungeon start rejected guild=%s user=%s difficulty=%s error=%s",
+                interaction.guild.id,
+                interaction.user.id,
+                difficulty,
+                result.error,
+            )
+            return await _rpg_followup_send(interaction, f"❌ {result.error}", ephemeral=True)
         e = _build_dungeon_start_embed(result, lang)
         state = await DungeonRunService.get_state(interaction.guild.id, interaction.user.id, lang=lang)
         view = DungeonControlView(interaction.guild.id, interaction.user.id, lang, state) if state.ok else None
-        await interaction.response.send_message(embed=e, view=view)
+        payload = _dungeon_start_card_payload(result, state if state.ok else None, lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+        if card_file is not None:
+            sent = await _rpg_followup_send(interaction, embed=e, view=view, file=card_file, wait=True)
+        else:
+            sent = await _rpg_followup_send(interaction, embed=e, view=view, wait=True)
         if view is not None:
-            try:
-                view.message = await interaction.original_response()
-            except Exception:
-                pass
+            view.message = sent
 
     @dungeon_group.command(name="status", description=app_commands.locale_str("cmd.dungeon.status.desc"))
     async def dungeon_status(interaction: discord.Interaction):
@@ -2530,7 +3580,12 @@ def setup(bot: commands.Bot, guilds: list = None):
             return await interaction.response.send_message(tr(lang, "rpg.dungeon.no_active"), ephemeral=True)
         e = resolved_embed if resolved_embed is not None else _build_dungeon_state_embed(state, lang)
         view = DungeonControlView(interaction.guild.id, interaction.user.id, lang, state)
-        await interaction.response.send_message(embed=e, view=view)
+        payload = _dungeon_state_card_payload(state, lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, view=view, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e, view=view)
         try:
             view.message = await interaction.original_response()
         except Exception:
@@ -2548,11 +3603,16 @@ def setup(bot: commands.Bot, guilds: list = None):
             return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
         e = _build_dungeon_node_result_embed(result, lang)
         next_view = None
+        state = await DungeonRunService.get_state(interaction.guild.id, interaction.user.id, lang=lang)
         if result.next_phase in {"selecting_path", "choice", "resolving_node"}:
-            state = await DungeonRunService.get_state(interaction.guild.id, interaction.user.id, lang=lang)
             if state.ok:
                 next_view = DungeonControlView(interaction.guild.id, interaction.user.id, lang, state)
-        await interaction.response.send_message(embed=e, view=next_view)
+        payload = _dungeon_node_card_payload(result, state if state.ok else None, lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, view=next_view, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e, view=next_view)
         if next_view is not None:
             try:
                 next_view.message = await interaction.original_response()
@@ -2577,7 +3637,12 @@ def setup(bot: commands.Bot, guilds: list = None):
         )
         state = await DungeonRunService.get_state(interaction.guild.id, interaction.user.id, lang=lang)
         view = DungeonControlView(interaction.guild.id, interaction.user.id, lang, state) if state.ok else None
-        await interaction.response.send_message(embed=e, view=view)
+        payload = _dungeon_choice_card_payload(result, state if state.ok else None, lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, view=view, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e, view=view)
         if view is not None:
             try:
                 view.message = await interaction.original_response()
@@ -2593,7 +3658,12 @@ def setup(bot: commands.Bot, guilds: list = None):
         if not result.ok:
             return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
         e = _build_dungeon_finish_embed(result, lang)
-        await interaction.response.send_message(embed=e)
+        payload = _dungeon_finish_card_payload(result, lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e)
 
     @dungeon_group.command(name="claim", description=app_commands.locale_str("cmd.dungeon.claim.desc"))
     async def dungeon_claim(interaction: discord.Interaction):
@@ -2604,12 +3674,17 @@ def setup(bot: commands.Bot, guilds: list = None):
         if not result.ok:
             return await interaction.response.send_message(f"❌ {result.error}", ephemeral=True)
         e = _build_dungeon_finish_embed(result, lang)
-        await interaction.response.send_message(embed=e)
+        payload = _dungeon_finish_card_payload(result, lang)
+        card_file = await _attach_dungeon_card(e, payload, interaction.guild, lang)
+        if card_file is not None:
+            await interaction.response.send_message(embed=e, file=card_file)
+        else:
+            await interaction.response.send_message(embed=e)
 
     try:
         bot.tree.add_command(dungeon_group)
     except Exception:
-        pass
+        logger.exception("failed to register /dungeon command group")
 
     @bot.tree.command(name="party_hunt", description=app_commands.locale_str("cmd.party_hunt.desc"))
     @discord.app_commands.describe(member2=app_commands.locale_str("cmd.party_hunt.param.member2"), member3=app_commands.locale_str("cmd.party_hunt.param.member3"), member4=app_commands.locale_str("cmd.party_hunt.param.member4"))
@@ -2639,7 +3714,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         result = await CombatService.party_hunt(interaction.guild.id, [m.id for m in clean_party], lang=lang)
         if not result.ok:
             msg = "❌ Party hunt lỗi." if lang == "vi" else "❌ Party hunt failed."
-            return await interaction.followup.send(msg, ephemeral=True)
+            return await _rpg_followup_send(interaction, msg, ephemeral=True)
 
         e = panel_embed(
             mode="Joint Operation",
@@ -2651,8 +3726,8 @@ def setup(bot: commands.Bot, guilds: list = None):
         log_url = await _publish_combat_log(result.logs or [], lang=lang)
 
         summary_parts = [f"Hạ: **{result.kills}/{result.pack}**"]
-        summary_parts.append(f"+{result.gold} Slime Coin 💰")
-        summary_parts.append(f"+{result.xp} ✨")
+        summary_parts.append(f"+{result.gold} {CURRENCY_ICON} Slime Coin")
+        summary_parts.append(f"+{result.xp} {XP_ICON}")
         clear_bar = progress_bar(result.kills, max(1, result.pack), 12)
         e.add_field(name="Operation Summary", value=" • ".join(summary_parts), inline=False)
         e.add_field(name="Clear Progress", value=f"`{clear_bar}`", inline=False)
@@ -2680,7 +3755,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         combat_detail = "\n".join(logs[:15]) if logs else tr(lang, "rpg.no_combat_detail")
         view = CombatDetailView(combat_detail, lang=lang)
         
-        await interaction.followup.send(embed=e, view=view)
+        await _rpg_followup_send(interaction, embed=e, view=view)
         view.message = await interaction.original_response()
 
     @bot.tree.command(name="quest", description=app_commands.locale_str("cmd.quest.desc"))
@@ -2688,8 +3763,8 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await resolve_lang(interaction)
         if interaction.guild is None:
             return await _server_only_interaction(interaction)
-        e = await handle_quest(interaction.guild.id, interaction.user.id, lang=lang)
-        await interaction.response.send_message(embed=e, ephemeral=True, files=_collect_files(apply_embed_asset(e, "quest")))
+        e = await handle_quest(interaction.guild.id, interaction.user.id, owner_name=interaction.user.display_name, lang=lang)
+        await interaction.response.send_message(embed=e, ephemeral=True)
 
     @bot.tree.command(name="quest_claim", description=app_commands.locale_str("cmd.quest_claim.desc"))
     @app_commands.describe(quest_id=app_commands.locale_str("cmd.quest_claim.param.quest_id"))
@@ -2711,8 +3786,7 @@ def setup(bot: commands.Bot, guilds: list = None):
     async def rpg_loot(interaction: discord.Interaction):
         lang = await resolve_lang(interaction)
         e = _build_loot_codex_embed(lang)
-        f = apply_embed_asset(e, "inventory")
-        await interaction.response.send_message(embed=e, files=_collect_files(f))
+        await interaction.response.send_message(embed=e)
 
     @bot.tree.command(name="create_character", description=app_commands.locale_str("cmd.create_character.desc"))
     @app_commands.describe(role=app_commands.locale_str("cmd.create_character.param.role"), gender=app_commands.locale_str("cmd.create_character.param.gender"))
@@ -2740,10 +3814,21 @@ def setup(bot: commands.Bot, guilds: list = None):
         if interaction.guild is None:
             return await _server_only_interaction(interaction)
 
-        embed, err, ephemeral = await handle_gacha(interaction.guild.id, interaction.user.id, pulls=pulls, banner=banner, lang=lang)
+        embed, err, ephemeral, card_file = await handle_gacha(
+            interaction.guild.id,
+            interaction.user.id,
+            pulls=pulls,
+            banner=banner,
+            lang=lang,
+            guild=interaction.guild,
+            player_name=interaction.user.display_name,
+        )
         if err:
             return await interaction.response.send_message(err, ephemeral=ephemeral)
-        await interaction.response.send_message(embed=embed)
+        if card_file is not None:
+            await interaction.response.send_message(embed=embed, file=card_file)
+        else:
+            await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="my_characters", description=app_commands.locale_str("cmd.my_characters.desc"))
     async def my_characters(interaction: discord.Interaction):
@@ -2802,17 +3887,21 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await resolve_lang(interaction)
         if interaction.guild is None:
             return await _server_only_interaction(interaction)
-        embed, view, msg, ephemeral = await handle_team(
+        embed, view, msg, ephemeral, card_file = await handle_team(
             interaction.guild.id,
             interaction.user.id,
             interaction.user.display_name,
+            guild=interaction.guild,
             action=action,
             character_id=character_id,
             slot=slot,
             lang=lang,
         )
         if embed is not None:
-            await interaction.response.send_message(embed=embed, view=view)
+            if card_file is not None:
+                await interaction.response.send_message(embed=embed, view=view, file=card_file)
+            else:
+                await interaction.response.send_message(embed=embed, view=view)
             if view is not None:
                 try:
                     view.message = await interaction.original_response()
@@ -2874,7 +3963,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         if ctx.guild is None:
             return await ctx.reply(tr(lang, "common.server_only"))
         target = member or ctx.author
-        e, files, view, err = await handle_profile(
+        e, view, err = await handle_profile(
             ctx.guild.id,
             target,
             lang=lang,
@@ -2882,7 +3971,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         )
         if err:
             return await ctx.reply(err)
-        msg = await ctx.reply(embed=e, files=files, view=view)
+        msg = await ctx.reply(embed=e, view=view)
         if view is not None:
             view.message = msg
 
@@ -2891,10 +3980,19 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await _lang_for_ctx(ctx)
         if ctx.guild is None:
             return await ctx.reply(tr(lang, "common.server_only"))
-        embed, view, err = await handle_hunt(ctx.guild.id, ctx.author.id, ctx.author.display_name, lang=lang)
+        embed, view, err, card_file = await handle_hunt(
+            ctx.guild.id,
+            ctx.author.id,
+            ctx.author.display_name,
+            guild=ctx.guild,
+            lang=lang,
+        )
         if err:
             return await ctx.reply(err)
-        msg = await ctx.reply(embed=embed, view=view)
+        if card_file is not None:
+            msg = await ctx.reply(embed=embed, view=view, file=card_file)
+        else:
+            msg = await ctx.reply(embed=embed, view=view)
         view.message = msg
 
     @bot.command(name="b")
@@ -2902,10 +4000,19 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await _lang_for_ctx(ctx)
         if ctx.guild is None:
             return await ctx.reply(tr(lang, "common.server_only"))
-        embed, view, err = await handle_boss(ctx.guild.id, ctx.author.id, ctx.author.display_name, lang=lang)
+        embed, view, err, card_file = await handle_boss(
+            ctx.guild.id,
+            ctx.author.id,
+            ctx.author.display_name,
+            guild=ctx.guild,
+            lang=lang,
+        )
         if err:
             return await ctx.reply(err)
-        msg = await ctx.reply(embed=embed, view=view)
+        if card_file is not None:
+            msg = await ctx.reply(embed=embed, view=view, file=card_file)
+        else:
+            msg = await ctx.reply(embed=embed, view=view)
         view.message = msg
 
     @bot.command(name="d")
@@ -2917,12 +4024,34 @@ def setup(bot: commands.Bot, guilds: list = None):
 
         if act == "start":
             difficulty = str(value or "normal").strip().lower() or "normal"
-            result = await DungeonRunService.start_run(ctx.guild.id, ctx.author.id, difficulty=difficulty, lang=lang)
+            try:
+                result = await DungeonRunService.start_run(ctx.guild.id, ctx.author.id, difficulty=difficulty, lang=lang)
+            except Exception:
+                logger.exception(
+                    "text dungeon start crashed guild=%s user=%s difficulty=%s",
+                    ctx.guild.id,
+                    ctx.author.id,
+                    difficulty,
+                )
+                return await ctx.reply(tr(lang, "unknown_error"))
             if not result.ok:
+                logger.warning(
+                    "text dungeon start rejected guild=%s user=%s difficulty=%s error=%s",
+                    ctx.guild.id,
+                    ctx.author.id,
+                    difficulty,
+                    result.error,
+                )
                 return await ctx.reply(f"❌ {result.error}")
             state = await DungeonRunService.get_state(ctx.guild.id, ctx.author.id, lang=lang)
             view = DungeonControlView(ctx.guild.id, ctx.author.id, lang, state) if state.ok else None
-            msg = await ctx.reply(embed=_build_dungeon_start_embed(result, lang), view=view)
+            e = _build_dungeon_start_embed(result, lang)
+            payload = _dungeon_start_card_payload(result, state if state.ok else None, lang)
+            card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+            if card_file is not None:
+                msg = await ctx.reply(embed=e, view=view, file=card_file)
+            else:
+                msg = await ctx.reply(embed=e, view=view)
             if view is not None:
                 view.message = msg
             return
@@ -2945,7 +4074,13 @@ def setup(bot: commands.Bot, guilds: list = None):
                 hint = tr(lang, "rpg.dungeon.suggest.status")
 
             view = DungeonControlView(ctx.guild.id, ctx.author.id, lang, state)
-            msg = await ctx.reply(content=hint, embed=(resolved_embed if resolved_embed is not None else _build_dungeon_state_embed(state, lang)), view=view)
+            e = resolved_embed if resolved_embed is not None else _build_dungeon_state_embed(state, lang)
+            payload = _dungeon_state_card_payload(state, lang)
+            card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+            if card_file is not None:
+                msg = await ctx.reply(content=hint, embed=e, view=view, file=card_file)
+            else:
+                msg = await ctx.reply(content=hint, embed=e, view=view)
             view.message = msg
             return
 
@@ -2960,18 +4095,30 @@ def setup(bot: commands.Bot, guilds: list = None):
                 else:
                     tip = tr(lang, "rpg.dungeon.path_auto_hint")
                 view = DungeonControlView(ctx.guild.id, ctx.author.id, lang, state)
-                msg = await ctx.reply(content=tip, embed=_build_dungeon_state_embed(state, lang), view=view)
+                e = _build_dungeon_state_embed(state, lang)
+                payload = _dungeon_state_card_payload(state, lang)
+                card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+                if card_file is not None:
+                    msg = await ctx.reply(content=tip, embed=e, view=view, file=card_file)
+                else:
+                    msg = await ctx.reply(content=tip, embed=e, view=view)
                 view.message = msg
                 return
             result = await DungeonRunService.choose_node(ctx.guild.id, ctx.author.id, node_id=node_id, lang=lang)
             if not result.ok:
                 return await ctx.reply(f"❌ {result.error}")
             next_view = None
+            state = await DungeonRunService.get_state(ctx.guild.id, ctx.author.id, lang=lang)
             if result.next_phase in {"selecting_path", "choice", "resolving_node"}:
-                state = await DungeonRunService.get_state(ctx.guild.id, ctx.author.id, lang=lang)
                 if state.ok:
                     next_view = DungeonControlView(ctx.guild.id, ctx.author.id, lang, state)
-            msg = await ctx.reply(embed=_build_dungeon_node_result_embed(result, lang), view=next_view)
+            e = _build_dungeon_node_result_embed(result, lang)
+            payload = _dungeon_node_card_payload(result, state if state.ok else None, lang)
+            card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+            if card_file is not None:
+                msg = await ctx.reply(embed=e, view=next_view, file=card_file)
+            else:
+                msg = await ctx.reply(embed=e, view=next_view)
             if next_view is not None:
                 next_view.message = msg
             return
@@ -2987,7 +4134,13 @@ def setup(bot: commands.Bot, guilds: list = None):
                 else:
                     tip = tr(lang, "rpg.dungeon.choice_auto_hint")
                 view = DungeonControlView(ctx.guild.id, ctx.author.id, lang, state)
-                msg = await ctx.reply(content=tip, embed=_build_dungeon_state_embed(state, lang), view=view)
+                e = _build_dungeon_state_embed(state, lang)
+                payload = _dungeon_state_card_payload(state, lang)
+                card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+                if card_file is not None:
+                    msg = await ctx.reply(content=tip, embed=e, view=view, file=card_file)
+                else:
+                    msg = await ctx.reply(content=tip, embed=e, view=view)
                 view.message = msg
                 return
             result = await DungeonRunService.apply_choice(ctx.guild.id, ctx.author.id, choice_id=choice_id, lang=lang)
@@ -3001,7 +4154,12 @@ def setup(bot: commands.Bot, guilds: list = None):
             )
             state = await DungeonRunService.get_state(ctx.guild.id, ctx.author.id, lang=lang)
             view = DungeonControlView(ctx.guild.id, ctx.author.id, lang, state) if state.ok else None
-            msg = await ctx.reply(embed=e, view=view)
+            payload = _dungeon_choice_card_payload(result, state if state.ok else None, lang)
+            card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+            if card_file is not None:
+                msg = await ctx.reply(embed=e, view=view, file=card_file)
+            else:
+                msg = await ctx.reply(embed=e, view=view)
             if view is not None:
                 view.message = msg
             return
@@ -3010,13 +4168,23 @@ def setup(bot: commands.Bot, guilds: list = None):
             result = await DungeonRunService.retreat(ctx.guild.id, ctx.author.id, lang=lang)
             if not result.ok:
                 return await ctx.reply(f"❌ {result.error}")
-            return await ctx.reply(embed=_build_dungeon_finish_embed(result, lang))
+            e = _build_dungeon_finish_embed(result, lang)
+            payload = _dungeon_finish_card_payload(result, lang)
+            card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+            if card_file is not None:
+                return await ctx.reply(embed=e, file=card_file)
+            return await ctx.reply(embed=e)
 
         if act == "claim":
             result = await DungeonRunService.claim_rewards(ctx.guild.id, ctx.author.id, lang=lang)
             if not result.ok:
                 return await ctx.reply(f"❌ {result.error}")
-            return await ctx.reply(embed=_build_dungeon_finish_embed(result, lang))
+            e = _build_dungeon_finish_embed(result, lang)
+            payload = _dungeon_finish_card_payload(result, lang)
+            card_file = await _attach_dungeon_card(e, payload, ctx.guild, lang)
+            if card_file is not None:
+                return await ctx.reply(embed=e, file=card_file)
+            return await ctx.reply(embed=e)
 
         await ctx.reply(tr(lang, "rpg.dungeon.invalid_action"))
 
@@ -3025,10 +4193,21 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await _lang_for_ctx(ctx)
         if ctx.guild is None:
             return await _server_only_ctx(ctx)
-        embed, err, _ = await handle_gacha(ctx.guild.id, ctx.author.id, pulls=pulls, banner=banner, lang=lang)
+        embed, err, _, card_file = await handle_gacha(
+            ctx.guild.id,
+            ctx.author.id,
+            pulls=pulls,
+            banner=banner,
+            lang=lang,
+            guild=ctx.guild,
+            player_name=ctx.author.display_name,
+        )
         if err:
             return await ctx.reply(err)
-        await ctx.reply(embed=embed)
+        if card_file is not None:
+            await ctx.reply(embed=embed, file=card_file)
+        else:
+            await ctx.reply(embed=embed)
 
     @bot.command(name="mc")
     async def text_my_characters(ctx: commands.Context):
@@ -3045,17 +4224,21 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await _lang_for_ctx(ctx)
         if ctx.guild is None:
             return await _server_only_ctx(ctx)
-        embed, view, msg, _ = await handle_team(
+        embed, view, msg, _, card_file = await handle_team(
             ctx.guild.id,
             ctx.author.id,
             ctx.author.display_name,
+            guild=ctx.guild,
             action=action,
             character_id=character_id,
             slot=slot,
             lang=lang,
         )
         if embed is not None:
-            sent = await ctx.reply(embed=embed, view=view)
+            if card_file is not None:
+                sent = await ctx.reply(embed=embed, view=view, file=card_file)
+            else:
+                sent = await ctx.reply(embed=embed, view=view)
             if view is not None:
                 view.message = sent
             return
@@ -3099,7 +4282,7 @@ def setup(bot: commands.Bot, guilds: list = None):
         lang = await _lang_for_ctx(ctx)
         if ctx.guild is None:
             return await _server_only_ctx(ctx)
-        e = await handle_quest(ctx.guild.id, ctx.author.id, lang=lang)
+        e = await handle_quest(ctx.guild.id, ctx.author.id, owner_name=ctx.author.display_name, lang=lang)
         await ctx.reply(embed=e)
 
     @bot.command(name="qc")

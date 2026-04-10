@@ -3,6 +3,9 @@ import random
 from dataclasses import dataclass
 from typing import Optional
 
+from features.emoji_registry import CURRENCY_ICON
+from features.emoji_registry import rarity_icon as rarity_icon_token
+
 
 COSMETIC_DB_KEY = os.getenv("RPG_DB", "data/rpg.db").replace(".db", "_cosmetics.db")
 
@@ -97,10 +100,11 @@ def format_title_shop(buyable: list[Title]) -> str:
     
     lines = ["**📜 SHOP TITLES**", ""]
     for t in buyable:
-        emoji = "🟢" if t.cost < 1000 else "🔵" if t.cost < 5000 else "🟣" if t.cost < 10000 else "🟡"
+        tier = "common" if t.cost < 1000 else "rare" if t.cost < 5000 else "epic" if t.cost < 10000 else "legendary"
+        emoji = rarity_icon_token(tier)
         lines.append(f"{emoji} **{t.name}**")
         lines.append(f"   {t.emoji} {t.description}")
-        lines.append(f"   💰 {t.cost:,} gold")
+        lines.append(f"   💰 {t.cost:,} {CURRENCY_ICON} Slime Coin")
         lines.append("")
     
     return "\n".join(lines)
@@ -113,7 +117,7 @@ def format_aura_shop(buyable: list[Aura]) -> str:
     lines = ["**✨ SHOP AURAS**", ""]
     for a in buyable:
         lines.append(f"**{a.name}** {a.emoji}")
-        lines.append(f"   💰 {a.cost:,} gold")
+        lines.append(f"   💰 {a.cost:,} {CURRENCY_ICON} Slime Coin")
         lines.append("")
     
     return "\n".join(lines)

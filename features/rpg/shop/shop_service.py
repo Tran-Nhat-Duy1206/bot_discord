@@ -2,6 +2,10 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+from features.emoji_registry import CURRENCY_ICON
+from features.emoji_registry import RARITY_ICONS
+from features.emoji_registry import rarity_icon as rarity_icon_token
+
 from ..data import ITEMS
 
 
@@ -70,14 +74,7 @@ RARITY_COLORS = {
     "legendary": 0xFFAA00,
 }
 
-RARITY_EMOJI = {
-    "common": "⚪",
-    "uncommon": "🟢",
-    "rare": "🔵",
-    "epic": "🟣",
-    "legendary": "🟡",
-}
-
+RARITY_EMOJI = dict(RARITY_ICONS)
 
 def get_item_by_id(item_id: str) -> Optional[ShopItem]:
     return SHOP_ITEMS.get(item_id)
@@ -163,7 +160,7 @@ def _format_category(category: str, title: str) -> str:
             continue
         
         rarity_items = grouped[rarity]
-        lines.append(f"\n{RARITY_EMOJI[rarity]} **{rarity.upper()}**")
+        lines.append(f"\n{rarity_icon_token(rarity)} **{rarity.upper()}**")
         lines.append("─" * 20)
         
         for item in rarity_items:
@@ -203,7 +200,7 @@ def _format_black_market() -> str:
             continue
         
         rarity_items = grouped[rarity]
-        lines.append(f"\n{RARITY_EMOJI[rarity]} **{rarity.upper()}**")
+        lines.append(f"\n{rarity_icon_token(rarity)} **{rarity.upper()}**")
         lines.append("─" * 20)
         
         for item in rarity_items:
@@ -211,7 +208,7 @@ def _format_black_market() -> str:
             lines.append(
                 f"{item.emoji} **{item.name}**"
             )
-            lines.append(f"   💰 Sell: `~{sell_price:,}` gold (60% giá thường)")
+            lines.append(f"   💰 Sell: `~{sell_price:,}` {CURRENCY_ICON} Slime Coin (60% giá thường)")
             lines.append(f"   📝 {item.desc}")
             lines.append("")
     

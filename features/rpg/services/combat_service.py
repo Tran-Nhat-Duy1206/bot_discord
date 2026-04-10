@@ -2,6 +2,8 @@ import random
 from dataclasses import dataclass, field
 from typing import Optional
 
+from features.emoji_registry import CURRENCY_ICON, XP_ICON
+
 from ..data import (
     ITEMS, MONSTERS, BOSS_VARIANTS,
     pick_monster,
@@ -54,6 +56,9 @@ class CombatResult:
     damage_blocked: int = 0
     weekly_event: dict = field(default_factory=dict)
     cooldown_remain: int = 0
+    turns: int = 0
+    streak: int = 0
+    best_streak: int = 0
 
 
 @dataclass
@@ -80,6 +85,14 @@ class BossResult:
     shield_turns: int = 0
     summon_count: int = 0
     weekly_event: dict = field(default_factory=dict)
+    turns: int = 0
+    damage_dealt: int = 0
+    damage_taken: int = 0
+    boss_max_hp: int = 0
+    boss_current_hp: int = 0
+    boss_atk: int = 0
+    boss_def: int = 0
+    cooldown_remain: int = 0
 
 
 @dataclass
@@ -187,7 +200,7 @@ class CombatService(BaseService):
 
             team_power = CombatService._team_power(team)
             has_healer = any(str(m.get("role", "")).lower() == "healer" for m in team)
-            pack = random.randint(3, 6)
+            pack = random.randint(1, 5)
             kills = 0
             total_gold = 0
             total_xp = 0
@@ -230,9 +243,9 @@ class CombatService(BaseService):
                 total_gold += g
                 total_xp += x
                 logs.append(
-                    f"{idx + 1}. Hạ {monster['name']} (+{g} Slime Coin, +{x} xp)"
+                    f"{idx + 1}. Hạ {monster['name']} (+{g} {CURRENCY_ICON} Slime Coin, +{x} {XP_ICON})"
                     if _is_vi(lang)
-                    else f"{idx + 1}. Defeated {monster['name']} (+{g} Slime Coin, +{x} xp)"
+                    else f"{idx + 1}. Defeated {monster['name']} (+{g} {CURRENCY_ICON} Slime Coin, +{x} {XP_ICON})"
                 )
 
                 rolled = roll_drops(monster, drop_mult=1.0 + len(team) * 0.04)
@@ -264,6 +277,13 @@ class CombatService(BaseService):
                 damage_taken=total_damage_taken,
                 drop_qty=sum(int(v) for v in drops.values()),
             )
+            streak, best_streak = await telemetry_repo.update_player_streak(
+                conn,
+                guild_id,
+                user_id,
+                "hunt",
+                kills == pack,
+            )
 
             result = CombatResult(
                 ok=True,
@@ -277,6 +297,9 @@ class CombatService(BaseService):
                 xp_remain=remain_xp,
                 hp=int(player_row[2]),
                 effective_hp=int(player_row[2]),
+                turns=total_turns,
+                streak=streak,
+                best_streak=best_streak,
                 drops=drops,
                 logs=logs,
                 encounters=encounters,
@@ -323,7 +346,7 @@ class CombatService(BaseService):
         damage_reduction = damage_reduction + float(sprofile["damage_reduction"])
 
         player_hp = min(effective_max_hp, hp + bonus_hp)
-        pack = random.randint(5, 10)
+        pack = random.randint(1, 5)
 
         total_gold = 0
         total_xp = 0
@@ -406,11 +429,11 @@ class CombatService(BaseService):
                     jackpot_hits += 1
                     jackpot_gold += jg
                     await telemetry_repo.record_slime_jackpot(conn, guild_id, user_id, jg)
-                    logs.append(f"  ✨ JACKPOT! Slime rơi thêm +{jg} gold")
+                    logs.append(f"  ✨ JACKPOT! Slime rơi thêm +{jg} {CURRENCY_ICON} Slime Coin")
 
             total_gold += g
             total_xp += x
-            logs.append(f"{i+1}. Hạ {m['name']} (+{g} Slime Coin, +{x} xp, {battle.get('turns', 0)} turns)")
+            logs.append(f"{i+1}. Hạ {m['name']} (+{g} {CURRENCY_ICON} Slime Coin, +{x} {XP_ICON}, {battle.get('turns', 0)} turns)")
 
             if battle_logs:
                 logs.extend([f"  {line}" for line in battle_logs[:4]])
@@ -457,6 +480,13 @@ class CombatService(BaseService):
             damage_dealt=total_damage_dealt, damage_taken=total_damage_taken,
             drop_qty=sum(int(v) for v in drops.values()),
         )
+        streak, best_streak = await telemetry_repo.update_player_streak(
+            conn,
+            guild_id,
+            user_id,
+            "hunt",
+            hunt_win,
+        )
 
         return CombatResult(
             ok=True,
@@ -482,6 +512,9 @@ class CombatService(BaseService):
             lifesteal_heal=total_lifesteal_heal,
             damage_blocked=total_damage_blocked,
             weekly_event={"id": str(event.get("id", "")), "name": str(event.get("name", "Weekly Event"))},
+            turns=total_turns,
+            streak=streak,
+            best_streak=best_streak,
         )
 
     @staticmethod
@@ -494,7 +527,7 @@ class CombatService(BaseService):
             from ..db.db import cooldown_remain
             remain = await cooldown_remain(conn, guild_id, user_id, "boss")
             if remain > 0:
-                return BossResult()
+                return BossResult(cooldown_remain=max(1, int(remain)))
 
             team = await CombatService._load_team_members(conn, guild_id, user_id)
             if not team:
@@ -517,6 +550,9 @@ class CombatService(BaseService):
                 int(boss["atk"] * atk_scale),
                 int(boss["def"] * def_scale),
             )
+            scaled_boss_hp = int(boss["hp"] * hp_scale)
+            scaled_boss_atk = int(boss["atk"] * atk_scale)
+            scaled_boss_def = int(boss["def"] * def_scale)
             win = bool(battle.get("win", False))
 
             total_gold = 0
@@ -549,6 +585,14 @@ class CombatService(BaseService):
                 damage_taken=int(battle.get("damage_taken", 0)),
                 drop_qty=sum(int(v) for v in drops.values()),
             )
+            await telemetry_repo.record_guild_boss_damage(
+                conn,
+                guild_id,
+                user_id,
+                str(boss.get("id", "boss")),
+                int(battle.get("damage_dealt", 0)),
+                win,
+            )
 
             result = BossResult(
                 ok=True,
@@ -559,10 +603,17 @@ class CombatService(BaseService):
                 xp=total_xp,
                 drops=drops,
                 base_hp=max(0, int(battle.get("monster_hp", 0))),
+                boss_max_hp=max(1, int(scaled_boss_hp)),
+                boss_current_hp=max(0, int(battle.get("monster_hp", 0))),
+                boss_atk=max(1, int(scaled_boss_atk)),
+                boss_def=max(1, int(scaled_boss_def)),
                 leveled_up=leveled_up,
                 level=new_level,
                 xp_remain=remain_xp,
                 logs=list(battle.get("logs", [])),
+                turns=max(1, int(battle.get("turns", 0))),
+                damage_dealt=max(0, int(battle.get("damage_dealt", 0))),
+                damage_taken=max(0, int(battle.get("damage_taken", 0))),
             )
             
             await telemetry_repo.set_cooldown(conn, guild_id, user_id, "boss", RPG_BOSS_COOLDOWN)
@@ -587,7 +638,6 @@ class CombatService(BaseService):
         lifesteal = float(profile["lifesteal"])
         crit_bonus = float(profile["crit_bonus"])
         damage_reduction = float(profile["damage_reduction"])
-        equipped = profile["equipped"]
         active_set = profile.get("set_bonus")
 
         skill_bonus_atk = int(sprofile["attack"])
@@ -628,12 +678,26 @@ class CombatService(BaseService):
                 damage_dealt=int(battle.get("damage_dealt", 0)),
                 damage_taken=int(battle.get("damage_taken", 0)),
             )
+            await telemetry_repo.record_guild_boss_damage(
+                conn,
+                guild_id,
+                user_id,
+                str(boss.get("id", "ancient_ogre")),
+                int(battle.get("damage_dealt", 0)),
+                False,
+            )
             return BossResult(
                 ok=True, win=False,
                 boss_id=boss.get("id", "ancient_ogre"), boss=boss["name"],
                 base_hp=base_hp,
-                equipped=equipped,
+                boss_max_hp=max(1, int(boss_hp)),
+                boss_current_hp=max(0, int(battle.get("monster_hp", 0))),
+                boss_atk=max(1, int(boss_atk)),
+                boss_def=max(1, int(boss_def)),
                 logs=battle_logs,
+                turns=max(1, int(battle.get("turns", 0))),
+                damage_dealt=max(0, int(battle.get("damage_dealt", 0))),
+                damage_taken=max(0, int(battle.get("damage_taken", 0))),
                 combat_effects=CombatEffects(lifesteal=lifesteal, crit_bonus=crit_bonus, damage_reduction=damage_reduction),
                 set_bonus=str(active_set.get("name", "")) if active_set else "",
                 passive_skills=list(sprofile.get("passives", [])),
@@ -671,13 +735,28 @@ class CombatService(BaseService):
             damage_taken=int(battle.get("damage_taken", 0)),
             drop_qty=sum(int(v) for v in drops.values()),
         )
+        await telemetry_repo.record_guild_boss_damage(
+            conn,
+            guild_id,
+            user_id,
+            str(boss.get("id", "ancient_ogre")),
+            int(battle.get("damage_dealt", 0)),
+            True,
+        )
 
         return BossResult(
             ok=True, win=True,
             boss_id=boss.get("id", "ancient_ogre"), boss=boss["name"],
             gold=reward_gold, xp=reward_xp, drops=drops,
             base_hp=base_hp, leveled_up=leveled_up, level=new_level, xp_remain=remain_xp,
+            boss_max_hp=max(1, int(boss_hp)),
+            boss_current_hp=max(0, int(battle.get("monster_hp", 0))),
+            boss_atk=max(1, int(boss_atk)),
+            boss_def=max(1, int(boss_def)),
             logs=battle_logs,
+            turns=max(1, int(battle.get("turns", 0))),
+            damage_dealt=max(0, int(battle.get("damage_dealt", 0))),
+            damage_taken=max(0, int(battle.get("damage_taken", 0))),
             combat_effects=CombatEffects(lifesteal=lifesteal, crit_bonus=crit_bonus, damage_reduction=damage_reduction),
             set_bonus=str(active_set.get("name", "")) if active_set else "",
             passive_skills=list(sprofile.get("passives", [])),
@@ -904,9 +983,9 @@ class CombatService(BaseService):
                 for item_id, amount in rolled.items():
                     drops[item_id] = drops.get(item_id, 0) + amount
                 logs.append(
-                    f"{i+1}. Team hạ {monster['name']} (+{g} Slime Coin, +{x} xp)"
+                    f"{i+1}. Team hạ {monster['name']} (+{g} {CURRENCY_ICON} Slime Coin, +{x} {XP_ICON})"
                     if _is_vi(lang)
-                    else f"{i+1}. Team defeated {monster['name']} (+{g} Slime Coin, +{x} xp)"
+                    else f"{i+1}. Team defeated {monster['name']} (+{g} {CURRENCY_ICON} Slime Coin, +{x} {XP_ICON})"
                 )
             else:
                 logs.append(

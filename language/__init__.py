@@ -19,7 +19,6 @@ CMD_I18N = {
     "cmd.profile.param.member": {"vi": "Xem hồ sơ người khác", "en": "View another member profile"},
     "cmd.stats.desc": {"vi": "Mở Formation Analysis", "en": "Open Formation Analysis"},
     "cmd.stats.param.member": {"vi": "Xem stats người khác", "en": "View another member stats"},
-    "cmd.rpg_balance.desc": {"vi": "Xem quỹ Slime Coin", "en": "View Slime Coin reserve"},
     "cmd.rpg_daily.desc": {"vi": "Nhận trợ cấp hằng ngày", "en": "Claim daily squad stipend"},
     "cmd.rpg_pay.desc": {"vi": "Chuyển quỹ cho đồng minh", "en": "Transfer funds to an ally"},
     "cmd.rpg_pay.param.member": {"vi": "Người nhận", "en": "Receiver"},

@@ -14,6 +14,7 @@ TEXTS = {
     "rpg.hunt_unavailable": "❌ Hunt is not ready (cooldown or no team).",
     "rpg.hunt_cooldown": "❌ Hunt is on cooldown: **{seconds}s** remaining.",
     "rpg.boss_unavailable": "❌ Boss is not ready (cooldown or no team).",
+    "rpg.boss_cooldown": "❌ Boss is on cooldown: **{seconds}s** remaining.",
     "rpg.dungeon_unavailable": "❌ Dungeon is not ready (cooldown or no team).",
     "rpg.no_combat_detail": "No details available",
     "rpg.log_link_hint": "Tap `📜 Battle Replay` for full turn-by-turn record.",

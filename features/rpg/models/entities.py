@@ -109,6 +109,7 @@ class BossResult:
     shield_turns: int = 0
     summon_count: int = 0
     weekly_event: dict = field(default_factory=dict)
+    cooldown_remain: int = 0
 
 
 @dataclass

@@ -7,6 +7,7 @@ import aiosqlite
 
 ACTIVE_PHASES = ("selecting_path", "resolving_node", "choice")
 CLAIMABLE_PHASES = ("claimable",)
+SQLITE_INT64_MAX = (1 << 63) - 1
 
 
 def _now() -> int:
@@ -15,6 +16,13 @@ def _now() -> int:
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _sqlite_int64(value: Any) -> int:
+    n = int(value)
+    if n < 0:
+        return int((-n) % SQLITE_INT64_MAX) * -1
+    return int(n % SQLITE_INT64_MAX)
 
 
 def _loads_dict(raw: Any) -> dict:
@@ -181,8 +189,8 @@ async def create_run(conn: aiosqlite.Connection, run: dict) -> None:
             int(run.get("fatigue", 0)),
             int(run.get("corruption", 0)),
             int(run.get("revive_tokens", 0)),
-            int(run.get("seed", 0)),
-            int(run.get("weekly_seed", 0)),
+            _sqlite_int64(run.get("seed", 0)),
+            _sqlite_int64(run.get("weekly_seed", 0)),
             str(run.get("current_node_id", "")),
             _dumps(run.get("pending_choice", {})),
             _dumps(run.get("pending_rewards", {})),
@@ -544,10 +552,10 @@ async def upsert_weekly_state(conn: aiosqlite.Connection, week_key: str, data: d
         """,
         (
             str(week_key),
-            int(data.get("seed", 0)),
+            _sqlite_int64(data.get("seed", 0)),
             str(data.get("boss_family", "ancient")),
             _dumps(data.get("global_modifiers", [])),
-            int(data.get("created_at", _now())),
+            _sqlite_int64(data.get("created_at", _now())),
         ),
     )
 

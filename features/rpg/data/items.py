@@ -1,7 +1,7 @@
 ITEMS: dict[str, dict] = {
     "potion": {
         "name": "Potion",
-        "emoji": "🧪",
+        "emoji": ":potion:",
         "buy": 60,
         "sell": 30,
         "desc": "Hồi 35 HP",
@@ -11,7 +11,7 @@ ITEMS: dict[str, dict] = {
     },
     "mega_potion": {
         "name": "Mega Potion",
-        "emoji": "🧴",
+        "emoji": ":mega_potion:",
         "buy": 180,
         "sell": 90,
         "desc": "Hồi 100 HP",
@@ -21,7 +21,7 @@ ITEMS: dict[str, dict] = {
     },
     "lootbox": {
         "name": "Lootbox",
-        "emoji": "🎁",
+        "emoji": ":lootbox:",
         "buy": 0,
         "sell": 70,
         "desc": "Mở để nhận vàng hoặc vật phẩm",
@@ -31,7 +31,7 @@ ITEMS: dict[str, dict] = {
     },
     "rare_crystal": {
         "name": "Rare Crystal",
-        "emoji": "💎",
+        "emoji": ":rare_crystal:",
         "buy": 0,
         "sell": 260,
         "desc": "Tài nguyên hiếm từ slime",
@@ -83,7 +83,7 @@ ITEMS: dict[str, dict] = {
     },
     "slime_blade": {
         "name": "Slime Blade",
-        "emoji": "🧬",
+        "emoji": ":slime_blade:",
         "buy": 0,
         "sell": 360,
         "desc": "Kiếm rèn từ slime core (+7 ATK, hút máu 8%)",
@@ -97,7 +97,7 @@ ITEMS: dict[str, dict] = {
     },
     "ogre_plate": {
         "name": "Ogre Plate",
-        "emoji": "🧱",
+        "emoji": ":ogre_plate:",
         "buy": 0,
         "sell": 420,
         "desc": "Giáp dày của ogre (+6 DEF, +40 HP, giảm 12% damage)",
@@ -111,7 +111,7 @@ ITEMS: dict[str, dict] = {
     },
     "phoenix_charm": {
         "name": "Phoenix Charm",
-        "emoji": "🔥",
+        "emoji": ":phoenix_charm:",
         "buy": 0,
         "sell": 480,
         "desc": "Bùa lửa cổ (+4 ATK, +3 DEF, +20 HP, +8% crit, hút máu 4%)",

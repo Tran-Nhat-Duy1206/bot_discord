@@ -4,6 +4,8 @@ from typing import Iterable
 
 import discord
 
+from features.emoji_registry import rarity_icon as rarity_icon_token
+
 
 THEME_COLORS = {
     "profile": discord.Color.from_rgb(198, 161, 91),
@@ -16,19 +18,10 @@ THEME_COLORS = {
 }
 
 ROLE_ICONS = {
-    "tank": "🛡️",
-    "dps": "⚔️",
-    "healer": "💚",
-    "support": "✨",
-}
-
-RARITY_ICONS = {
-    "common": "⚪",
-    "uncommon": "🟢",
-    "rare": "🔵",
-    "epic": "🟣",
-    "legendary": "🟡",
-    "mythic": "🔴",
+    "tank": ":tank:",
+    "dps": ":DPS:",
+    "healer": ":Healer:",
+    "support": ":Support:",
 }
 
 FRONTLINE_ROLES = {"tank", "dps"}
@@ -51,7 +44,7 @@ def role_icon(role: str) -> str:
 
 
 def rarity_icon(rarity: str) -> str:
-    return RARITY_ICONS.get(str(rarity or "common").lower(), "⚫")
+    return rarity_icon_token(rarity)
 
 
 def panel_embed(

@@ -15,7 +15,7 @@ WEAPONS: dict[str, dict] = {
     },
     "slime_blade": {
         "name": "Slime Blade",
-        "emoji": "🧬",
+        "emoji": ":slime_blade:",
         "buy": 0,
         "sell": 360,
         "desc": "Kiếm rèn từ slime core (+7 ATK, hút máu 8%)",
@@ -75,7 +75,7 @@ ARMORS: dict[str, dict] = {
     },
     "ogre_plate": {
         "name": "Ogre Plate",
-        "emoji": "🧱",
+        "emoji": ":ogre_plate:",
         "buy": 0,
         "sell": 420,
         "desc": "Giáp dày của ogre (+6 DEF, +40 HP, giảm 12% damage)",
@@ -121,7 +121,7 @@ ACCESSORIES: dict[str, dict] = {
     },
     "phoenix_charm": {
         "name": "Phoenix Charm",
-        "emoji": "🔥",
+        "emoji": ":phoenix_charm:",
         "buy": 0,
         "sell": 480,
         "desc": "Bùa lửa cổ (+4 ATK, +3 DEF, +20 HP, +8% crit, hút máu 4%)",

@@ -980,7 +980,7 @@ def _node_status_lines() -> tuple[int, int, list[str]]:
             connected += 1
         status = getattr(getattr(node, "status", None), "name", str(getattr(node, "status", "UNKNOWN")))
         players = len(getattr(node, "players", {}) or {})
-        marker = "🟢" if ok else "🔴"
+        marker = ":uncommon:" if ok else ":mythic:"
         lines.append(f"{marker} `{identifier}` • {status} • players={players}")
     return len(nodes), connected, lines
 
